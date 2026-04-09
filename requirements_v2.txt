@@ -1,5 +1,7 @@
 # Football Copilot v2 — Python Dependencies
 # MacBook Pro 2018 Intel i7 (CPU only)
+# Instalar PyTorch primero (CPU):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
 # Core CV & Detection
 ultralytics>=8.3.0          # YOLOv11x — modelo más robusto (yolo11x.pt se descarga automáticamente)
@@ -22,6 +24,10 @@ sahi>=0.11.14                # Sliced Inference — detecta jugadores pequeños 
 
 # Tracking (Norfair — el usado por Tryolabs Soccer Analytics)
 norfair>=2.2.0               # Multi-object tracker con Kalman + IoU/Euclidean
+
+# Deep Learning (re-identificación OSNet)
+torch>=2.2.0
+torchvision>=0.17.0
 
 # Utilidades
 pillow==10.4.0
