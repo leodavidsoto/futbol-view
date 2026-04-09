@@ -1,0 +1,43 @@
+# Videos (pruebas locales, no subir)
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Modelos YOLO (descargables, pesados)
+*.pt
+*.pth
+*.weights
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Datos de partidos / exports
+partido_*.json
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# IDE
+.vscode/
+.idea/
+
+# Env local
+.env
+.env.local
+frontend/.env
+
+# Logs
+*.log

@@ -1,0 +1,27 @@
+# Football Copilot v2 — Python Dependencies
+# MacBook Pro 2018 Intel i7 (CPU only)
+
+# Core CV & Detection
+ultralytics>=8.3.0          # YOLOv11x — modelo más robusto (yolo11x.pt se descarga automáticamente)
+opencv-python-headless==4.10.0.84  # OpenCV sin GUI (headless para server)
+numpy==1.26.4
+
+# Tracking (ByteTrack real via Roboflow Supervision)
+supervision==0.22.0          # ByteTrack + utilidades de detección
+
+# Machine Learning (clasificación equipos KMeans)
+scikit-learn==1.5.1
+
+# Backend API
+fastapi==0.112.0
+uvicorn[standard]==0.30.3
+python-multipart==0.0.9     # Para UploadFile
+
+# Detección aérea / objetos pequeños
+sahi>=0.11.14                # Sliced Inference — detecta jugadores pequeños en tomas de drone
+
+# Tracking (Norfair — el usado por Tryolabs Soccer Analytics)
+norfair>=2.2.0               # Multi-object tracker con Kalman + IoU/Euclidean
+
+# Utilidades
+pillow==10.4.0
