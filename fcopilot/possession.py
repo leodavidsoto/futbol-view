@@ -13,6 +13,20 @@ lecturas complementarias:
 Además se aplica histéresis: un equipo necesita mantener el balón varios frames
 seguidos para que se le adjudique, evitando el parpadeo cuando dos rivales
 están a la misma distancia.
+
+**Robos y pérdidas se cuentan por separado** (decisión del carril NUCLEO). El
+contador anterior sumaba uno cada vez que el portador pasaba a ser un equipo,
+así que la secuencia ``team_1 → none → team_1`` —un despeje que recupera el
+mismo equipo— contaba como dos cambios de posesión cuando el balón nunca cambió
+de manos. Ahora:
+
+* ``changes`` cuenta **cambios reales de manos**: el balón pasa a un equipo
+  distinto del último que lo tuvo. Pasar por ``none`` por el camino da igual.
+* ``interruptions`` cuenta las veces que el balón quedó en disputa o sin dueño.
+
+La transición directa ``team_1 → team_2`` sigue existiendo si el rival encadena
+``confirm_frames``: no se obliga a pasar por ``none``, porque en un robo limpio
+el balón nunca está sin dueño.
 """
 
 from __future__ import annotations
@@ -34,6 +48,8 @@ class PossessionTracker:
         self.seconds: Dict[str, float] = {TEAM_1: 0.0, TEAM_2: 0.0, NONE: 0.0}
         self.holder: str = NONE
         self.changes = 0
+        self.interruptions = 0
+        self._last_team_holder: str = NONE
         self._candidate: str = NONE
         self._candidate_streak = 0
 
@@ -77,8 +93,14 @@ class PossessionTracker:
 
         if self._candidate != self.holder and self._candidate_streak >= self.confirm_frames:
             self.holder = self._candidate
-            if self.holder != NONE:
-                self.changes += 1
+            if self.holder == NONE:
+                # El balón queda en disputa o sin dueño. No es un cambio de
+                # posesión: si lo recupera el mismo equipo, nunca cambió de manos.
+                self.interruptions += 1
+            else:
+                if self._last_team_holder not in (NONE, self.holder):
+                    self.changes += 1
+                self._last_team_holder = self.holder
 
         if dt > 0:
             self.seconds[self.holder] = self.seconds.get(self.holder, 0.0) + dt
@@ -114,6 +136,7 @@ class PossessionTracker:
         return {
             "holder": self.holder,
             "changes": self.changes,
+            "interruptions": self.interruptions,
             "seconds": {k: round(v, 2) for k, v in self.seconds.items()},
             "share": self.share(),
             "percentages": self.percentages(),
@@ -125,6 +148,8 @@ class PossessionTracker:
             "seconds": dict(self.seconds),
             "holder": self.holder,
             "changes": self.changes,
+            "interruptions": self.interruptions,
+            "last_team_holder": self._last_team_holder,
         }
 
     @classmethod
@@ -135,6 +160,11 @@ class PossessionTracker:
             obj.seconds[key] = float(seconds.get(key, 0.0))
         obj.holder = str(state.get("holder", NONE))
         obj.changes = int(state.get("changes", 0))
+        obj.interruptions = int(state.get("interruptions", 0))
+        # Las sesiones guardadas antes de separar robos de interrupciones no
+        # traen este campo: se reconstruye del portador actual, que es lo
+        # correcto salvo que el balón estuviera en disputa justo al guardar.
+        obj._last_team_holder = str(state.get("last_team_holder") or (obj.holder if obj.holder != NONE else NONE))
         return obj
 
 

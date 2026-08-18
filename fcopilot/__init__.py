@@ -26,9 +26,13 @@ from fcopilot.geometry import (
 )
 from fcopilot.kinematics import (
     SPEED_ZONES,
+    TIME_SOURCE_CLOCK,
+    TIME_SOURCE_VIDEO,
+    TIME_SOURCES,
     KinematicsConfig,
     PlayerKinematics,
     Sample,
+    TimeBaseError,
 )
 from fcopilot.possession import PossessionTracker
 from fcopilot.report import build_report
@@ -48,6 +52,10 @@ __all__ = [
     "PossessionTracker",
     "SPEED_ZONES",
     "Sample",
+    "TIME_SOURCES",
+    "TIME_SOURCE_CLOCK",
+    "TIME_SOURCE_VIDEO",
+    "TimeBaseError",
     "SimpleCentroidTracker",
     "build_report",
     "default_runtime_config",

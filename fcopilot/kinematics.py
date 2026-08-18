@@ -20,6 +20,24 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+#: Base de tiempo de una muestra. ``video`` es el único valor con el que las
+#: métricas significan lo que dicen; ``reloj`` sólo es legítimo en directo
+#: (webcam), donde no existe un tiempo de vídeo que consultar.
+TIME_SOURCE_VIDEO = "video"
+TIME_SOURCE_CLOCK = "reloj"
+TIME_SOURCES = (TIME_SOURCE_VIDEO, TIME_SOURCE_CLOCK)
+
+
+class TimeBaseError(ValueError):
+    """La base de tiempo de una muestra es incoherente con las anteriores.
+
+    Es la regla 5 de ``AGENTS.md`` hecha código. Se lanza cuando el tiempo
+    retrocede o cuando se mezclan dos fuentes de tiempo dentro del mismo
+    análisis: las dos cosas producen métricas que parecen correctas y no lo son,
+    que es exactamente el fallo que ya pasó desapercibido una vez.
+    """
+
+
 #: Zonas de intensidad (nombre, km/h mínimo inclusive, km/h máximo exclusive).
 SPEED_ZONES: Tuple[Tuple[str, float, float], ...] = (
     ("caminando", 0.0, 7.0),
@@ -95,6 +113,7 @@ class PlayerKinematics:
         self.zone_distance_m: Dict[str, float] = {name: 0.0 for name, _, _ in SPEED_ZONES}
         self.sprints = 0
         self.rejected_steps = 0
+        self.duplicate_samples = 0
         self.active_seconds = 0.0
         self._sprint_elapsed = 0.0
         self._first_t: Optional[float] = None
@@ -120,8 +139,24 @@ class PlayerKinematics:
 
     # ── Actualización ──────────────────────────────────────────────────
     def update(self, sample: Sample) -> float:
-        """Registra una muestra y devuelve la velocidad suavizada en km/h."""
+        """Registra una muestra y devuelve la velocidad suavizada en km/h.
+
+        Lanza :class:`TimeBaseError` si el tiempo retrocede. Una muestra con el
+        mismo ``t`` que la anterior no es un error —un vídeo puede repetir
+        marca de tiempo— pero no aporta desplazamiento, así que se descarta y se
+        cuenta en ``duplicate_samples`` en vez de dividir por cero.
+        """
         previous = self.samples[-1] if self.samples else None
+        if previous is not None:
+            if sample.t < previous.t:
+                raise TimeBaseError(
+                    f"track {self.track_id}: el tiempo retrocede de {previous.t:.3f}s a "
+                    f"{sample.t:.3f}s. Las métricas se calculan sobre tiempo de vídeo "
+                    f"monótono; revisa de dónde sale el timestamp."
+                )
+            if sample.t == previous.t:
+                self.duplicate_samples += 1
+                return self.speed_kmh
         self.samples.append(sample)
         if len(self.samples) > self.config.max_history:
             del self.samples[: len(self.samples) - self.config.max_history]
@@ -213,6 +248,7 @@ class PlayerKinematics:
             "sprints": self.sprints,
             "observed_s": self.observed_seconds,
             "rejected_steps": self.rejected_steps,
+            "duplicate_samples": self.duplicate_samples,
             "zones_m": {k: round(v, 1) for k, v in self.zone_distance_m.items()},
         }
 
@@ -227,6 +263,7 @@ class PlayerKinematics:
             "zone_distance_m": dict(self.zone_distance_m),
             "sprints": self.sprints,
             "rejected_steps": self.rejected_steps,
+            "duplicate_samples": self.duplicate_samples,
             "active_seconds": self.active_seconds,
             "first_t": self._first_t,
             "last_t": self._last_t,
@@ -254,6 +291,7 @@ class PlayerKinematics:
             obj.zone_distance_m[name] = float(zones.get(name, 0.0))
         obj.sprints = int(state.get("sprints", 0))
         obj.rejected_steps = int(state.get("rejected_steps", 0))
+        obj.duplicate_samples = int(state.get("duplicate_samples", 0))
         obj.active_seconds = float(state.get("active_seconds", 0.0))
         obj._first_t = state.get("first_t")
         obj._last_t = state.get("last_t")

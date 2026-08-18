@@ -155,3 +155,110 @@ def test_resumen_tiene_las_claves_del_informe():
         "avg_speed_kmh", "sprints", "observed_s", "zones_m",
     }
     assert math.isfinite(summary["total_dist_m"])
+
+
+# ── Invariancia al muestreo ─────────────────────────────────────────────
+#
+# La suite anterior probaba que el cálculo era correcto; no que fuera
+# **invariante al muestreo**, que es la propiedad que de verdad se rompió:
+# analizar 1 de cada 3 frames multiplicaba las velocidades por tres y ninguna
+# prueba lo notaba. Estas pruebas recorren el mismo movimiento a tres
+# frecuencias distintas y exigen el mismo resultado.
+
+import pytest
+
+from fcopilot.kinematics import (
+    KinematicsConfig,
+    PlayerKinematics,
+    Sample,
+    TimeBaseError,
+)
+
+FPS_VIDEO = 30.0
+DURACION_S = 4.0
+VELOCIDAD_MPS = 5.0          # 18 km/h: trote sostenido, dentro de max_speed_kmh
+
+
+def _recorrido_recto(frame_skip: int):
+    """Un jugador en línea recta a velocidad constante, muestreado 1 de cada N+1.
+
+    En movimiento rectilíneo uniforme, submuestrear no puede cambiar ni la
+    distancia ni la velocidad: cualquier diferencia es un error de base de
+    tiempo, no de discretización.
+    """
+    paso = frame_skip + 1
+    total = int(FPS_VIDEO * DURACION_S)
+    for i in range(0, total + 1, paso):
+        t = i / FPS_VIDEO
+        yield Sample(frame=i, t=t, x=0.0, y=0.0, wx=VELOCIDAD_MPS * t, wy=0.0)
+
+
+def _analizar(frame_skip: int) -> PlayerKinematics:
+    # smoothing=1.0 quita el EMA: sin él, cada frecuencia converge distinto y la
+    # prueba mediría el suavizado en vez de la base de tiempo.
+    kin = PlayerKinematics(1, KinematicsConfig(smoothing=1.0))
+    for muestra in _recorrido_recto(frame_skip):
+        kin.update(muestra)
+    return kin
+
+
+@pytest.mark.parametrize("frame_skip", [0, 2, 5])
+def test_la_distancia_no_depende_del_muestreo(frame_skip):
+    kin = _analizar(frame_skip)
+    esperada = VELOCIDAD_MPS * DURACION_S          # 20 m
+    assert kin.total_distance_m == pytest.approx(esperada, abs=0.01)
+
+
+@pytest.mark.parametrize("frame_skip", [0, 2, 5])
+def test_la_velocidad_no_depende_del_muestreo(frame_skip):
+    kin = _analizar(frame_skip)
+    esperada_kmh = VELOCIDAD_MPS * 3.6             # 18 km/h
+    assert kin.speed_kmh == pytest.approx(esperada_kmh, abs=0.1)
+    assert kin.max_speed_kmh == pytest.approx(esperada_kmh, abs=0.1)
+
+
+def test_las_tres_frecuencias_dan_el_mismo_resultado():
+    """La comparación directa: si alguna difiere, la base de tiempo está mal."""
+    resultados = [_analizar(skip) for skip in (0, 2, 5)]
+    distancias = {round(k.total_distance_m, 2) for k in resultados}
+    velocidades = {round(k.speed_kmh, 1) for k in resultados}
+    assert len(distancias) == 1, f"la distancia cambia con el muestreo: {distancias}"
+    assert len(velocidades) == 1, f"la velocidad cambia con el muestreo: {velocidades}"
+
+
+def test_el_doble_conteo_de_distancia_no_ha_vuelto():
+    """Dos tramos de 10 m son 20 m, no 40. Es el bug exacto que hubo."""
+    kin = PlayerKinematics(1, KinematicsConfig(smoothing=1.0))
+    for i, x in enumerate((0.0, 10.0, 20.0)):
+        kin.update(Sample(frame=i, t=float(i * 2), x=0.0, y=0.0, wx=x, wy=0.0))
+    assert kin.total_distance_m == pytest.approx(20.0, abs=0.01)
+
+
+# ── Guardia de la base de tiempo (regla 5) ──────────────────────────────
+def test_el_tiempo_que_retrocede_es_un_error_ruidoso():
+    kin = PlayerKinematics(1)
+    kin.update(Sample(frame=0, t=0.0, x=0.0, y=0.0))
+    kin.update(Sample(frame=1, t=1.0, x=10.0, y=0.0))
+    with pytest.raises(TimeBaseError, match="retrocede"):
+        kin.update(Sample(frame=2, t=0.5, x=20.0, y=0.0))
+
+
+def test_una_muestra_repetida_se_descarta_sin_romper():
+    """Un vídeo puede repetir marca de tiempo; eso no es un fallo del llamador."""
+    kin = PlayerKinematics(1)
+    kin.update(Sample(frame=0, t=0.0, x=0.0, y=0.0))
+    kin.update(Sample(frame=1, t=1.0, x=10.0, y=0.0))
+    distancia_antes = kin.total_distance_m
+    kin.update(Sample(frame=2, t=1.0, x=99.0, y=0.0))
+    assert kin.duplicate_samples == 1
+    assert kin.total_distance_m == distancia_antes
+    assert len(kin.samples) == 2
+
+
+def test_las_muestras_repetidas_sobreviven_a_la_serializacion():
+    kin = PlayerKinematics(7)
+    kin.update(Sample(frame=0, t=0.0, x=0.0, y=0.0))
+    kin.update(Sample(frame=1, t=0.0, x=1.0, y=0.0))
+    revivido = PlayerKinematics.from_state(kin.to_state())
+    assert revivido.duplicate_samples == 1
+    assert revivido.summary()["duplicate_samples"] == 1

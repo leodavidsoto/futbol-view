@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from fcopilot.kinematics import SPEED_ZONES, PlayerKinematics
+from fcopilot.kinematics import SPEED_ZONES, TIME_SOURCE_VIDEO, PlayerKinematics
 from fcopilot.possession import TEAM_1, TEAM_2, PossessionTracker
 
 TEAMS = (TEAM_1, TEAM_2)
@@ -66,8 +66,14 @@ def build_report(
     config: Optional[Mapping[str, Any]] = None,
     include_positions: bool = True,
     version: str = "3.0",
+    time_source: str = TIME_SOURCE_VIDEO,
 ) -> Dict[str, Any]:
-    """Informe completo del partido a partir del estado del analizador."""
+    """Informe completo del partido a partir del estado del analizador.
+
+    *time_source* viaja hasta el informe a propósito: unas métricas calculadas
+    sobre el reloj de la cámara son legítimas en directo y no son comparables
+    con las de un vídeo. Etiquetarlas es lo que evita compararlas sin saberlo.
+    """
     entries: List[Dict[str, Any]] = [
         _player_entry(int(tid), meta, include_positions) for tid, meta in sorted(players.items())
     ]
@@ -81,6 +87,11 @@ def build_report(
             "duration_s": round(duration_s, 2),
             "calibrated": calibrated,
             "distance_unit": "m" if calibrated else "m (estimado por escala px/m)",
+            "time_source": time_source,
+            "time_base_note": (
+                "Métricas sobre tiempo de vídeo." if time_source == TIME_SOURCE_VIDEO
+                else "Métricas sobre el reloj de la cámara: sólo comparables con otras capturas en directo."
+            ),
             "config": dict(config or {}),
         },
         "possession": possession.snapshot(),
@@ -91,6 +102,7 @@ def build_report(
             "sprints": sum(e["sprints"] for e in entries),
             "top_speed_kmh": round(max((e["max_speed_kmh"] for e in entries), default=0.0), 1),
             "rejected_steps": sum(e["rejected_steps"] for e in entries),
+            "duplicate_samples": sum(e.get("duplicate_samples", 0) for e in entries),
         },
         "leaderboards": {
             "distance": [

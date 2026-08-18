@@ -27,7 +27,10 @@ def test_un_frame_suelto_del_rival_no_roba_la_posesion():
     alimentar(tracker, "team_1", 5)
     assert tracker.update("team_2", 0.1) == "team_1"
     assert tracker.update("team_1", 0.1) == "team_1"
-    assert tracker.changes == 1
+    # `changes` cuenta cambios de manos, y aquí no hubo ninguno: el balón lo
+    # tuvo team_1 desde el principio y nunca lo perdió.
+    assert tracker.changes == 0
+    assert tracker.interruptions == 0
 
 
 def test_el_reparto_entre_equipos_suma_cien():
@@ -101,7 +104,7 @@ def test_snapshot_y_serializacion():
     alimentar(tracker, "team_2", 8)
     snapshot = tracker.snapshot()
     assert snapshot["holder"] == "team_2"
-    assert set(snapshot) == {"holder", "changes", "seconds", "share", "percentages"}
+    assert set(snapshot) == {"holder", "changes", "interruptions", "seconds", "share", "percentages"}
 
     restored = PossessionTracker.from_state(tracker.to_state())
     assert restored.seconds == tracker.seconds
@@ -119,3 +122,93 @@ def test_timeline_agrupa_tramos():
     timeline = possession_timeline(eventos)
     assert [t["team"] for t in timeline] == ["team_1", "team_2", "team_1"]
     assert timeline[0]["start"] == 0.0 and timeline[0]["end"] == 0.5
+
+
+# ── Robos frente a interrupciones ───────────────────────────────────────
+#
+# Decisión del carril NUCLEO sobre la pregunta abierta del intake: un cambio de
+# posesión NO se obliga a pasar por `none`, pero pasar por `none` tampoco cuenta
+# como cambio. El contador anterior sumaba uno cada vez que el portador pasaba a
+# ser un equipo, así que un despeje recuperado por el mismo equipo contaba como
+# dos cambios de manos cuando el balón nunca cambió de manos.
+
+from fcopilot.possession import NONE, TEAM_1, TEAM_2, PossessionTracker
+
+
+def _sostener(tracker: PossessionTracker, equipo: str, frames: int = 4, dt: float = 0.1) -> None:
+    for _ in range(frames):
+        tracker.update(equipo, dt)
+
+
+def test_recuperar_el_propio_despeje_no_es_un_cambio_de_posesion():
+    tracker = PossessionTracker(confirm_frames=3)
+    _sostener(tracker, TEAM_1)
+    _sostener(tracker, NONE)
+    _sostener(tracker, TEAM_1)
+    assert tracker.changes == 0, "el balón nunca cambió de manos"
+    assert tracker.interruptions == 1
+    assert tracker.holder == TEAM_1
+
+
+def test_un_robo_limpio_sin_pasar_por_none_cuenta_como_cambio():
+    tracker = PossessionTracker(confirm_frames=3)
+    _sostener(tracker, TEAM_1)
+    _sostener(tracker, TEAM_2)
+    assert tracker.changes == 1
+    assert tracker.interruptions == 0
+
+
+def test_un_robo_con_disputa_por_el_camino_cuenta_una_sola_vez():
+    tracker = PossessionTracker(confirm_frames=3)
+    _sostener(tracker, TEAM_1)
+    _sostener(tracker, NONE)
+    _sostener(tracker, TEAM_2)
+    assert tracker.changes == 1
+    assert tracker.interruptions == 1
+
+
+def test_el_primer_equipo_en_tocar_el_balon_no_roba_nada():
+    tracker = PossessionTracker(confirm_frames=3)
+    _sostener(tracker, TEAM_1)
+    assert tracker.changes == 0
+    assert tracker.holder == TEAM_1
+
+
+def test_ida_y_vuelta_cuenta_dos_cambios():
+    tracker = PossessionTracker(confirm_frames=3)
+    _sostener(tracker, TEAM_1)
+    _sostener(tracker, TEAM_2)
+    _sostener(tracker, TEAM_1)
+    assert tracker.changes == 2
+
+
+def test_los_contadores_sobreviven_a_la_serializacion():
+    tracker = PossessionTracker(confirm_frames=3)
+    _sostener(tracker, TEAM_1)
+    _sostener(tracker, NONE)
+    _sostener(tracker, TEAM_2)
+    revivido = PossessionTracker.from_state(tracker.to_state())
+    assert (revivido.changes, revivido.interruptions) == (1, 1)
+    # Y sigue contando bien después de revivir: TEAM_2 ya es el último portador,
+    # así que recuperarlo él mismo no suma.
+    _sostener(revivido, NONE)
+    _sostener(revivido, TEAM_2)
+    assert revivido.changes == 1
+
+
+def test_una_sesion_antigua_sin_el_campo_nuevo_se_reconstruye():
+    """Estado guardado antes de separar robos de interrupciones."""
+    revivido = PossessionTracker.from_state(
+        {"confirm_frames": 3, "seconds": {TEAM_1: 5.0, TEAM_2: 3.0, NONE: 1.0}, "holder": TEAM_1, "changes": 4}
+    )
+    assert revivido.interruptions == 0
+    assert revivido._last_team_holder == TEAM_1
+    _sostener(revivido, TEAM_1)
+    assert revivido.changes == 4, "recuperar el balón el mismo equipo no suma"
+
+
+def test_el_snapshot_expone_ambos_contadores():
+    tracker = PossessionTracker(confirm_frames=2)
+    _sostener(tracker, TEAM_1)
+    snap = tracker.snapshot()
+    assert "changes" in snap and "interruptions" in snap
