@@ -60,3 +60,17 @@
   seguro** (dice que faltan en el documento). Es el comportamiento que quiero,
   pero el mensaje puede despistar.
 - El separador de los títulos es `·` (U+00B7), no un guion.
+- **El turno de arranque es la única excepción a la regla 3**, y no se le hizo un
+  hueco en el guardia a propósito. El orquestador que montó el andamiaje escribió
+  los seis `worklog/<CARRIL>/STATE.md`, así que
+  `check_carriles.py --diff main --carril PLATAFORMA` reporta cinco ficheros
+  ajenos en ese commit — correctamente. La forma de convivir con eso no es
+  añadirle una excepción al guardia, que serviría para colar cualquier cosa
+  después: el orquestador no es un carril y sus ramas no llevan el prefijo
+  `carril/`, que es lo que activa la comprobación de propiedad en CI. A partir de
+  aquí, cada `STATE.md` lo escribe su carril.
+- Escribir el guardia encontró un fallo en el manifiesto a los cinco minutos:
+  `worklog/EVENTS.jsonl` estaba en la tabla de rutas compartidas pero ningún mapa
+  de rutas lo cubría, así que salía como fichero sin dueño. La comprobación
+  ahora contrasta las dos tablas entre sí, que es un hallazgo más útil que el
+  original.
