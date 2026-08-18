@@ -12,32 +12,30 @@
  *  Mini-mapa, Barra posesión canvas, Slider radio círculos, Longitud trail
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+
+import { api, wsStreamUrl } from "./lib/api.js";
+import { findFrameAtTime, parseNdjsonChunk, summarizeFrame } from "./lib/frames.js";
+import {
+  BALL_COLOR,
+  TEAM_COLORS,
+  fmtDistance,
+  fmtTime,
+  hexToRgba,
+  speedColor,
+  teamColor,
+} from "./lib/format.js";
+import { getSessionId, resetSessionId } from "./lib/session.js";
 
 // ─── CONFIG ────────────────────────────────────────────────────
-const DEFAULT_API_URL = "http://localhost:8000";
-const API_URL        = (import.meta.env.VITE_API_URL || DEFAULT_API_URL).replace(/\/$/, "");
-const WS_URL         = `${(import.meta.env.VITE_WS_URL || API_URL.replace(/^http/, "ws")).replace(/\/$/, "")}/ws/stream`;
 const FRAME_RATE_MS = 80;
-const TEAM_COLORS   = { team_1: "#00ff88", team_2: "#ff3355", unknown: "#aaaaaa" };
-const BALL_COLOR    = "#ffdd00";
+//: Tope de frames guardados en memoria (~6 min a 3 fps efectivos).
+const MAX_BUFFERED_FRAMES = 12000;
 
 // Modos del flujo principal
 // "idle" → "loading" → "detecting" → "preview" → "analyzing" → "done"
 
 // ─── HELPERS ───────────────────────────────────────────────────
-function hexToRgba(hex, alpha) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-function fmtTime(sec) {
-  const m = Math.floor((sec || 0) / 60);
-  const s = Math.floor((sec || 0) % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
 function logClientError(scope, error) {
   console.debug(`[football-copilot] ${scope}`, error);
 }
@@ -99,6 +97,11 @@ export default function App() {
   const [detTeamClf,        setDetTeamClf]        = useState("grass_kmeans");
   const [detOsnetAvail,     setDetOsnetAvail]     = useState(false);
 
+  // ── Errores visibles y sesión ──────────────────────────────
+  const [analysisError,     setAnalysisError]     = useState(null);
+  const [backendError,      setBackendError]      = useState(null);
+  const [sessionId,         setSessionId]         = useState(() => getSessionId());
+
   // ── Refs ───────────────────────────────────────────────────
   const canvasRef              = useRef(null);
   const videoRef               = useRef(null);
@@ -115,6 +118,15 @@ export default function App() {
   const posOverridesRef        = useRef({});     // { [track_id]: { x, y } } – posiciones movidas manualmente
   const circleRadiusRef        = useRef(22);
   const calibratingRef         = useRef(false);  // ref para evitar stale closure en handlers
+  const videoUrlRef            = useRef(null);   // object URL del vídeo cargado
+
+  // Liberar el object URL: sin esto, cada vídeo cargado quedaba retenido en memoria.
+  const revokeVideoUrl = useCallback(() => {
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current);
+      videoUrlRef.current = null;
+    }
+  }, []);
 
   useEffect(() => { teamOverridesRef.current  = playerTeamOverrides; }, [playerTeamOverrides]);
   useEffect(() => { analysisPausedRef.current = analysisPaused;      }, [analysisPaused]);
@@ -123,8 +135,7 @@ export default function App() {
 
   // Cargar config del backend al iniciar
   useEffect(() => {
-    fetch(`${API_URL}/api/config`)
-      .then(r => r.json())
+    api.getConfig()
       .then(c => {
         setDetConf(c.confidence ?? 0.10);
         setDetImgsz(c.imgsz ?? 1280);
@@ -139,14 +150,20 @@ export default function App() {
         setDetTeamClf(c.team_classifier ?? "grass_kmeans");
         setDetOsnetAvail(c.osnet_available ?? false);
       })
-      .catch(error => { logClientError("config load failed", error); });
+      .catch(error => {
+        logClientError("config load failed", error);
+        setBackendError(error.message || "No se pudo conectar con el backend");
+      });
+    api.getCalibration()
+      .then(c => setIsCalibrated(Boolean(c.calibrated)))
+      .catch(error => { logClientError("calibration load failed", error); });
   }, []);
 
   const postConfig = useCallback((patch) => {
-    fetch(`${API_URL}/api/config`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }).catch(error => { logClientError("config update failed", error); });
+    api.setConfig(patch).catch(error => {
+      logClientError("config update failed", error);
+      setBackendError(error.message || "No se pudo aplicar la configuración");
+    });
   }, []);
 
   // ─────────────────────────────────────────────────────────
@@ -175,7 +192,7 @@ export default function App() {
     if (showHeatmap && data.players) {
       data.players.forEach(p => {
         const team  = overrides[p.track_id] || p.team;
-        const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
+        const color = teamColor(team);
         (p.trail || []).forEach((pt, i, arr) => {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
@@ -190,7 +207,7 @@ export default function App() {
       data.players.forEach(p => {
         const [x1, y1, x2, y2] = p.bbox;
         const team  = overrides[p.track_id] || p.team;
-        const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
+        const color = teamColor(team);
         ctx.strokeStyle = hexToRgba(color, 0.45);
         ctx.lineWidth   = 1;
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
@@ -229,7 +246,7 @@ export default function App() {
         const posOv      = posOverridesRef.current[p.track_id];
         const [cx, cy]   = posOv ? [posOv.x, posOv.y] : p.center;
         const team       = overrides[p.track_id] || p.team;
-        const color      = TEAM_COLORS[team] || TEAM_COLORS.unknown;
+        const color      = teamColor(team);
         const isSelected = teamPickerPlayer?.track_id === p.track_id;
         const isDragging = draggingRef.current?.track_id === p.track_id && draggingRef.current?.moved;
         const r          = circleRadius;
@@ -366,7 +383,7 @@ export default function App() {
       const hasWorld = data.players.some(p => p.world_pos);
       data.players.forEach(p => {
         const team  = overrides[p.track_id] || p.team;
-        const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
+        const color = teamColor(team);
         let px, py;
         if (hasWorld && p.world_pos) {
           // world_pos = [x_metros, y_metros], campo 105x68m
@@ -466,15 +483,9 @@ export default function App() {
       // → el círculo vuelve a seguir al jugador según el tracker del backend
       posOverridesRef.current = {};
 
-      const frames = allFramesRef.current;
-      if (!frames.length) return;
-      const t = video.currentTime;
-      let best = frames[0], md = Math.abs((best.video_time ?? 0) - t);
-      for (const f of frames) {
-        const d = Math.abs((f.video_time ?? 0) - t);
-        if (d < md) { md = d; best = f; }
-      }
-      latestDataRef.current = best;
+      // Búsqueda binaria: los frames llegan ordenados por `video_time`.
+      const best = findFrameAtTime(allFramesRef.current, video.currentTime);
+      if (best) latestDataRef.current = best;
     };
     const onMeta  = () => setVideoDuration(video.duration || 0);
     const onPlay  = () => setIsVideoPlaying(true);
@@ -494,6 +505,14 @@ export default function App() {
     };
   }, []);
 
+  // Limpieza al desmontar: WebSocket, temporizador de frames y object URL.
+  useEffect(() => () => {
+    clearInterval(frameTimerRef.current);
+    wsRef.current?.close();
+    abortRef.current?.abort();
+    revokeVideoUrl();
+  }, [revokeVideoUrl]);
+
   // ─────────────────────────────────────────────────────────
   // CARGA DE VIDEO → PREVIEW DE PRIMER FRAME
   // ─────────────────────────────────────────────────────────
@@ -510,8 +529,10 @@ export default function App() {
     setPreviewError(false);
 
     const video = videoRef.current;
-    const url   = URL.createObjectURL(file);
-    video.src   = url;
+    revokeVideoUrl();
+    const url = URL.createObjectURL(file);
+    videoUrlRef.current = url;
+    video.src = url;
 
     // Esperar a que el video esté listo
     if (video.readyState < 3) {
@@ -523,7 +544,7 @@ export default function App() {
 
     // Video listo: el usuario puede navegar y detectar manualmente
     setFlowStep("preview");
-  }, []);
+  }, [revokeVideoUrl]);
 
   // ─────────────────────────────────────────────────────────
   // DETECTAR JUGADORES EN EL FRAME ACTUAL
@@ -544,19 +565,18 @@ export default function App() {
     off.getContext("2d").drawImage(video, 0, 0, 854, 480);
 
     const blob = await new Promise(res => off.toBlob(res, "image/jpeg", 0.88));
-    const form = new FormData();
-    form.append("frame", blob, "frame.jpg");
+    if (!blob) { setPreviewError(true); setFlowStep("preview"); return; }
 
     try {
-      const res  = await fetch(`${API_URL}/api/preview-frame`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.previewFrame(blob, video.currentTime || 0);
       setFrameData(data);
       latestDataRef.current = data;
+      setBackendError(null);
       setFlowStep("preview");
     } catch (err) {
-      console.error("Preview frame error:", err);
+      logClientError("preview frame failed", err);
       setPreviewError(true);
+      setBackendError(err.message || "No se pudo analizar el frame");
       setFlowStep("preview");
     }
   }, []);
@@ -596,13 +616,11 @@ export default function App() {
     allFramesRef.current   = [];
     posOverridesRef.current = {};   // limpiar correcciones del preview
 
-    const formData = new FormData();
-    formData.append("file", videoFile);
+    setAnalysisError(null);
+    setBackendError(null);
 
     try {
-      const res    = await fetch(`${API_URL}/api/process-video`, {
-        method: "POST", body: formData, signal: abortRef.current.signal,
-      });
+      const res    = await api.processVideo(videoFile, abortRef.current.signal);
       const reader = res.body.getReader();
       const dec    = new TextDecoder();
       let buf      = "";
@@ -617,25 +635,27 @@ export default function App() {
         const { value, done } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const data = JSON.parse(line);
-            allFramesRef.current.push(data);
-            uiCount++;
-            if (uiCount % 3 === 0) { setFrameData(data); setProcessedFrames(uiCount); }
-            latestDataRef.current = data;
-          } catch (error) {
-            logClientError("ndjson frame parse failed", error);
-          }
+        const { frames, rest } = parseNdjsonChunk(buf, (error) =>
+          logClientError("ndjson frame parse failed", error));
+        buf = rest;
+
+        for (const data of frames) {
+          // El backend informa de sus fallos dentro del propio stream.
+          if (data.error) { setAnalysisError(data.error); continue; }
+          allFramesRef.current.push(data);
+          if (allFramesRef.current.length > MAX_BUFFERED_FRAMES) allFramesRef.current.shift();
+          uiCount++;
+          if (uiCount % 3 === 0) { setFrameData(data); setProcessedFrames(uiCount); }
+          latestDataRef.current = data;
         }
       }
       const last = allFramesRef.current.at(-1);
       if (last) { setFrameData(last); setProcessedFrames(allFramesRef.current.length); }
     } catch (err) {
-      if (err.name !== "AbortError") console.error("Analysis error:", err);
+      if (err.name !== "AbortError") {
+        logClientError("analysis failed", err);
+        setAnalysisError(err.message || "El análisis falló");
+      }
     } finally {
       setIsProcessing(false);
       setAnalysisPaused(false);
@@ -663,14 +683,16 @@ export default function App() {
   // ─────────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
     if (wsRef.current) wsRef.current.close();
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(wsStreamUrl());
     ws.binaryType = "arraybuffer";
     ws.onopen    = () => setWsStatus("connected");
     ws.onclose   = () => setWsStatus("disconnected");
     ws.onerror   = () => setWsStatus("error");
     ws.onmessage = (event) => {
       try {
-        setFrameData(JSON.parse(event.data));
+        const data = JSON.parse(event.data);
+        if (data.error) { setBackendError(data.error); return; }
+        setFrameData(data);
       } catch (error) {
         logClientError("ws frame parse failed", error);
       }
@@ -707,12 +729,10 @@ export default function App() {
     setPlayerTeamOverrides(prev => ({ ...prev, [trackId]: team }));
     setTeamPickerPlayer(prev => prev ? { ...prev, team } : prev);
     try {
-      await fetch(`${API_URL}/api/player-team`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: trackId, team }),
-      });
+      await api.setPlayerTeam(trackId, team);
     } catch (error) {
       logClientError("team override save failed", error);
+      setBackendError(error.message || "No se pudo guardar el equipo");
     }
   }, []);
 
@@ -723,12 +743,10 @@ export default function App() {
     if (name) {
       setPlayerNames(prev => ({ ...prev, [track_id]: name }));
       try {
-        await fetch(`${API_URL}/api/player-name`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ track_id, name }),
-        });
+        await api.setPlayerName(track_id, name);
       } catch (error) {
         logClientError("player name save failed", error);
+        setBackendError(error.message || "No se pudo guardar el nombre");
       }
     }
     setTeamPickerPlayer(null);
@@ -771,15 +789,14 @@ export default function App() {
         if (next.length === 4) {
           // Enviar al backend: esquinas TL, TR, BR, BL → (0,0)(105,0)(105,68)(0,68)
           const worldPts = [[0,0],[105,0],[105,68],[0,68]];
-          fetch(`${API_URL}/api/calibrate`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              img_points:   next.map(p => [p.x, p.y]),
-              world_points: worldPts,
-            }),
-          }).then(() => { setIsCalibrated(true); setCalibrating(false); }).catch(error => {
-            logClientError("field calibration failed", error);
-          });
+          api.calibrateHomography(next.map(p => [p.x, p.y]), worldPts)
+            .then(() => { setIsCalibrated(true); setCalibrating(false); setBackendError(null); })
+            .catch(error => {
+              logClientError("field calibration failed", error);
+              setBackendError(error.message || "Calibración inválida: revisa los 4 puntos");
+              setCalibrating(false);
+              setCalibPoints([]);
+            });
         }
         return next.length <= 4 ? next : prev;
       });
@@ -855,23 +872,29 @@ export default function App() {
   // ─────────────────────────────────────────────────────────
   const exportData = useCallback(async () => {
     try {
-      const res  = await fetch(`${API_URL}/api/export`);
-      const data = await res.json();
+      const data = await api.export();
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const a    = document.createElement("a");
-      a.href     = URL.createObjectURL(blob);
+      const url  = URL.createObjectURL(blob);
+      a.href     = url;
       a.download = `partido_${Date.now()}.json`;
       a.click();
+      URL.revokeObjectURL(url);
       setExportStatus("✅ Exportado");
       setTimeout(() => setExportStatus(null), 2500);
-    } catch { setExportStatus("❌ Error"); }
+    } catch (error) {
+      logClientError("export failed", error);
+      setExportStatus("❌ Error");
+    }
   }, []);
 
   // ─────────────────────────────────────────────────────────
   // JSX
   // ─────────────────────────────────────────────────────────
-  const stats = frameData?.stats || {};
-  const ball  = frameData?.ball;
+  const stats   = frameData?.stats || {};
+  const ball    = frameData?.ball;
+  const summary = useMemo(() => summarizeFrame(frameData), [frameData]);
+  const notice  = analysisError || backendError;
 
   return (
     <div style={styles.root}>
@@ -889,7 +912,22 @@ export default function App() {
           {wsStatus === "connected" ? "🟢 Live" : "⚫ Off"}
         </span>
         <span style={styles.fpsBadge}>{fps > 0 ? `${fps} FPS` : ""}</span>
+        <span style={styles.sessionBadge} title="Sesión de análisis: cada pestaña tiene la suya">
+          🔑 {sessionId.slice(0, 10)}
+        </span>
       </div>
+
+      {/* ── Aviso de error del backend / análisis ── */}
+      {notice && (
+        <div style={styles.notice} role="alert">
+          <span>⚠️ {notice}</span>
+          <button
+            style={styles.noticeClose}
+            onClick={() => { setAnalysisError(null); setBackendError(null); }}
+            aria-label="Cerrar aviso"
+          >✕</button>
+        </div>
+      )}
 
       <div style={styles.body}>
         {/* ── CANVAS AREA ── */}
@@ -1301,12 +1339,31 @@ export default function App() {
               {exportStatus && <span style={{ color: "#00ff88", fontSize: 11, marginLeft: 8 }}>{exportStatus}</span>}
               <button style={{ ...styles.btnSecondary, marginTop: 6 }}
                 onClick={async () => {
-                  await fetch(`${API_URL}/api/reset`, { method: "POST" });
+                  try { await api.reset(); }
+                  catch (error) { logClientError("reset failed", error); }
                   setFrameData(null); setFlowStep("idle"); setPlayerTeamOverrides({});
-                  setVideoFile(null); allFramesRef.current = [];
-                  if (videoRef.current) videoRef.current.src = "";
+                  setPlayerNames({}); setVideoFile(null); setIsCalibrated(false);
+                  setAnalysisError(null); setBackendError(null);
+                  allFramesRef.current = [];
+                  posOverridesRef.current = {};
+                  revokeVideoUrl();
+                  if (videoRef.current) videoRef.current.removeAttribute("src");
                 }}
               >🔄 Reset</button>
+              <button
+                style={{ ...styles.btnSecondary, marginTop: 6 }}
+                title="Descarta la sesión actual del backend y empieza una nueva y vacía"
+                onClick={() => {
+                  setSessionId(resetSessionId());
+                  setFrameData(null); setFlowStep("idle"); setPlayerTeamOverrides({});
+                  setPlayerNames({}); setVideoFile(null); setIsCalibrated(false);
+                  setAnalysisError(null); setBackendError(null);
+                  allFramesRef.current = [];
+                  posOverridesRef.current = {};
+                  revokeVideoUrl();
+                  if (videoRef.current) videoRef.current.removeAttribute("src");
+                }}
+              >🆕 Nueva sesión</button>
               {videoFile && (
                 <button
                   style={{ ...styles.btnSecondary, marginTop: 6,
@@ -1423,7 +1480,10 @@ export default function App() {
               <StatRow label="🟢 Equipo 1"     value={stats.team_1_count  || 0} color={TEAM_COLORS.team_1} />
               <StatRow label="🔴 Equipo 2"     value={stats.team_2_count  || 0} color={TEAM_COLORS.team_2} />
               <StatRow label="🧠 Clasificador" value={stats.classifier_ready ? "✅ Listo" : "⏳ Aprendiendo…"} />
+              <StatRow label="🛰️ Tracker"      value={stats.tracker || "—"} />
+              <StatRow label="🏟️ Campo"        value={stats.calibrated ? "✅ Calibrado" : "⚠️ Escala px/m"} />
               <StatRow label="🎞️ Frames proc." value={processedFrames} />
+              <StatRow label="⏱️ Tiempo analiz." value={fmtTime(stats.elapsed_s || 0)} />
               <StatRow label="⚡ FPS"          value={fps > 0 ? `${fps} fps` : "—"} />
               {ball && (
                 <div style={{ marginTop: 8 }}>
@@ -1433,8 +1493,25 @@ export default function App() {
                     <span style={{ color: TEAM_COLORS.team_1, fontSize: 12, fontWeight: 700 }}>{possession.team_1 || 0}%</span>
                     <span style={{ color: TEAM_COLORS.team_2, fontSize: 12, fontWeight: 700 }}>{possession.team_2 || 0}%</span>
                   </div>
+                  {frameData?.possession?.changes > 0 && (
+                    <div style={{ color: "#666", fontSize: 10, marginTop: 4 }}>
+                      {frameData.possession.changes} cambios de posesión
+                    </div>
+                  )}
                 </div>
               )}
+            </Section>
+
+            <Section title="🏅 Rendimiento en pista">
+              <StatRow label="🛣️ Distancia total" value={fmtDistance(summary.totalDistance)} />
+              <StatRow label="💨 Punta actual"    value={`${summary.topSpeed.toFixed(1)} km/h`}
+                color={speedColor(summary.topSpeed)} />
+              <StatRow label="🔥 Sprints"         value={summary.sprints} />
+              <p style={{ color: "#555", fontSize: 10, marginTop: 6, lineHeight: 1.4 }}>
+                {stats.calibrated
+                  ? "Métricas en metros reales (campo calibrado)."
+                  : "Métricas estimadas por escala px/m: calibra el campo para valores reales."}
+              </p>
             </Section>
 
             <Section title="🏃 Jugadores" scroll>
@@ -1588,7 +1665,7 @@ function ToggleRow({ label, value, onChange }) {
 }
 
 function PlayerCard({ player, name, team, isSelected, onEdit }) {
-  const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
+  const color = teamColor(team);
   return (
     <div
       style={{
@@ -1608,8 +1685,13 @@ function PlayerCard({ player, name, team, isSelected, onEdit }) {
         <span style={{ color: "#ccc", fontSize: 12 }}>{name || `#${player.track_id}`}</span>
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ color: "#888", fontSize: 10 }}>{player.speed_kmh > 0 ? `${player.speed_kmh} km/h` : ""}</div>
-        <div style={{ color: "#555", fontSize: 10 }}>{player.total_dist_m > 0 ? `${player.total_dist_m} m` : ""}</div>
+        <div style={{ color: speedColor(player.speed_kmh), fontSize: 10 }}>
+          {player.speed_kmh > 0 ? `${player.speed_kmh} km/h` : ""}
+        </div>
+        <div style={{ color: "#555", fontSize: 10 }}>
+          {player.total_dist_m > 0 ? fmtDistance(player.total_dist_m) : ""}
+          {player.sprints > 0 ? ` · 🔥${player.sprints}` : ""}
+        </div>
       </div>
     </div>
   );
@@ -1662,6 +1744,19 @@ function ModelCard({ active, available, title, badge, badgeColor, desc, source, 
 
 // ─── STYLES ────────────────────────────────────────────────────
 const styles = {
+  sessionBadge: {
+    marginLeft: "auto", padding: "2px 8px", borderRadius: 8,
+    background: "#11111a", color: "#556", fontSize: 11, fontFamily: "monospace",
+  },
+  notice: {
+    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+    padding: "6px 14px", background: "#2a1010", color: "#ff8877",
+    fontSize: 12, borderBottom: "1px solid #442222",
+  },
+  noticeClose: {
+    background: "transparent", border: "none", color: "#ff8877",
+    cursor: "pointer", fontSize: 13, lineHeight: 1,
+  },
   root: {
     background: "#080810", minHeight: "100vh",
     fontFamily: "'Segoe UI', Arial, sans-serif",
