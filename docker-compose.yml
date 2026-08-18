@@ -1,0 +1,67 @@
+# Levanta Football Copilot completo: API + cliente.
+#
+#   docker compose up --build
+#   → cliente en http://localhost:8080, API detrás del mismo origen
+#
+# Antes del primer arranque hay que provisionar los pesos:
+#   python3 scripts/fetch_weights.py --dest ./weights
+
+services:
+  api:
+    build:
+      context: .
+      target: servicio
+    environment:
+      # Vacía = servicio abierto. Antes de exponer esto fuera de tu máquina,
+      # define una credencial y cierra CORS. Ver worklog/API/CONTRATO.md.
+      API_KEY: "${API_KEY:-}"
+      CORS_ALLOW_ORIGINS: "${CORS_ALLOW_ORIGINS:-*}"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-1024}"
+      MAX_CONCURRENT_ANALYSES: "${MAX_CONCURRENT_ANALYSES:-2}"
+      WORKER_THREADS: "${WORKER_THREADS:-2}"
+      SESSION_TTL_SECONDS: "${SESSION_TTL_SECONDS:-1800}"
+      MAX_SESSIONS: "${MAX_SESSIONS:-12}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      MODEL_ROOT: /app/weights
+      SESSION_STATE_DIR: /app/.session_state
+    volumes:
+      # Los pesos se montan, no se hornean: cientos de megas que cambian de
+      # versión no deben quedar congelados en una capa de imagen.
+      - ./weights:/app/weights:ro
+      - sesiones:/app/.session_state
+    # Sin puertos publicados a propósito: sólo se llega por nginx, que es lo que
+    # mantiene cliente y API en el mismo origen. Para depurar, añade "8000:8000".
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+      args:
+        # Vacía = rutas relativas al mismo origen, que es lo que sirve nginx.
+        VITE_API_URL: ""
+        VITE_API_KEY: "${API_KEY:-}"
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Borrado periódico de sesiones caducadas. Perfil opcional: `--profile mantenimiento`.
+  # Ver la ambigüedad A-02 de ANALISIS.md — la política definitiva depende de si
+  # los datos derivados se pueden conservar y cuánto.
+  purga:
+    profiles: ["mantenimiento"]
+    build:
+      context: .
+      target: servicio
+    entrypoint: ["python", "scripts/purge_sessions.py", "--dir", "/app/.session_state", "--max-age-days", "${RETENTION_DAYS:-7}", "--loop", "3600"]
+    volumes:
+      - sesiones:/app/.session_state
+    restart: unless-stopped
+
+volumes:
+  sesiones:

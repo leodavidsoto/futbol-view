@@ -5,6 +5,28 @@ Funciona igual en Linux; en Windows usa `venv\Scripts\activate`.
 
 ---
 
+## 0. La vía rápida: contenedores
+
+Si sólo quieres que funcione, esto levanta el sistema entero sin instalar Python
+ni Node en tu máquina:
+
+```bash
+python3 scripts/fetch_weights.py --dest ./weights   # una sola vez
+docker compose up --build
+```
+
+Cliente en **http://localhost:8080**. La API va detrás del mismo origen, así que
+no hay que tocar CORS.
+
+Los pesos **no van dentro de la imagen**: pesan cientos de megas, cambian de
+versión y no deben quedar congelados en una capa. Se montan como volumen de sólo
+lectura desde `./weights`.
+
+El resto del documento es la instalación manual, que sigue siendo la cómoda para
+desarrollar.
+
+---
+
 ## 1. Requisitos previos
 
 ```bash
@@ -188,3 +210,91 @@ cd frontend && npm run lint && npm test && npm run build
 ```
 
 Ver [`TESTING.md`](TESTING.md).
+
+
+---
+
+## 9. Pesos del modelo
+
+Nada funciona sin ellos y hasta ahora nadie los provisionaba: se daban por
+presentes, y en un clon limpio el análisis fallaba con un error de `ultralytics`
+que no decía que faltara un fichero.
+
+```bash
+python3 scripts/fetch_weights.py --dest ./weights     # descarga y verifica
+python3 scripts/fetch_weights.py --dest ./weights --check-only
+python3 scripts/fetch_weights.py --dest ./weights --print-hashes
+```
+
+Luego arranca el backend con `MODEL_ROOT=./weights`.
+
+**Por qué se verifica el hash y no basta con descargar:** un `.pt` es un pickle
+de PyTorch, y cargarlo **ejecuta código**. `MODEL_ROOT` restringe *dónde* puede
+estar el fichero; el hash es lo único que dice *qué* contiene.
+
+La primera vez, `scripts/weights.sha256.json` trae `TODO(config)` en lugar de los
+hashes: nadie puede fijar un hash que no ha calculado. Descarga de una fuente en
+la que confíes, ejecuta `--print-hashes` y pega el resultado. A partir de ahí,
+cualquier cambio del fichero se detecta.
+
+**OSNet** (`osnet_x1_0_imagenet.pth`) no tiene una URL de descarga pública y
+estable que podamos fijar, así que el script no lo descarga: colócalo a mano y
+añade su hash. Sin él, el clasificador de equipos degrada a `grass_kmeans`, que
+es el valor por defecto de todas formas.
+
+---
+
+## 10. Variables de entorno
+
+La tabla completa está en `worklog/API/CONTRATO.md`. Las que importan al
+desplegar:
+
+| Variable | Por defecto | Cuándo cambiarla |
+|---|---|---|
+| `API_KEY` | *(vacía)* | **Siempre antes de exponer esto fuera de tu máquina.** Vacía = servicio abierto |
+| `CORS_ALLOW_ORIGINS` | `*` | Igual: con nginx delante, cliente y API comparten origen y puedes cerrarlo |
+| `MODEL_ROOT` | `.` | Debe apuntar al directorio de pesos |
+| `MAX_UPLOAD_MB` | `1024` | Si tus vídeos son más pequeños, bájalo: es superficie de ataque gratis |
+| `MAX_CONCURRENT_ANALYSES` | `WORKER_THREADS` | Análisis simultáneos en todo el servicio |
+| `SESSION_STATE_DIR` | `.session_state` | Debe ser un volumen persistente |
+
+Al arrancar sin `API_KEY`, el backend registra un aviso diciendo exactamente
+esto. No es decorativo: sin credencial, cualquiera que conozca o adivine un
+`session_id` lee el partido de otro.
+
+---
+
+## 11. Retención de datos
+
+El vídeo subido **se borra al terminar el análisis** y no se guarda nunca. Lo que
+sí persiste son los datos derivados —nombres, equipos, calibración,
+trayectorias— en `SESSION_STATE_DIR`, y crecen sin límite.
+
+```bash
+python3 scripts/purge_sessions.py --dir .session_state --max-age-days 7
+python3 scripts/purge_sessions.py --dir .session_state --dry-run
+docker compose --profile mantenimiento up -d purga     # cada hora, desatendido
+```
+
+La retención por defecto son 7 días y es **provisional**: la decisión de cuánto
+tiempo se pueden conservar estos datos sigue abierta (A-02 en `ANALISIS.md`).
+Siete días es corto a propósito — ampliarlo luego no cuesta nada, y haber
+guardado de más no se puede deshacer.
+
+---
+
+## 12. Runbook: qué hacer cuando se rompe
+
+| Síntoma | Causa casi siempre | Qué hacer |
+|---|---|---|
+| El análisis falla al instante y el log dice `DetectorUnavailable` | Faltan los pesos, o `ultralytics` no está instalado | `scripts/fetch_weights.py --check-only`; el mensaje del error trae el comando de instalación |
+| `El modelo debe estar dentro del proyecto` (400) | La ruta del modelo cae fuera de `MODEL_ROOT` | Es deliberado. Mueve el fichero o ajusta `MODEL_ROOT` |
+| 401 en todas las peticiones | El backend tiene `API_KEY` y el cliente no | Reconstruye el cliente con `VITE_API_KEY`, o quita la credencial |
+| 429 «el servicio ya está analizando N vídeos» | Límite global alcanzado | Esperar. Subir `MAX_CONCURRENT_ANALYSES` sólo ayuda si también subes `WORKER_THREADS` |
+| 429 «no hay hueco para otra sesión» | `MAX_SESSIONS` alcanzado | Borrar sesiones viejas con `DELETE /api/sessions/{id}` |
+| 413 al subir | El vídeo supera `MAX_UPLOAD_MB`, o el `client_max_body_size` de nginx | Los dos límites tienen que subir a la vez |
+| La barra de progreso no se mueve pero el análisis avanza | Algún proxy está almacenando el NDJSON | `proxy_buffering off`, ya puesto en `deploy/nginx.conf` |
+| Se corta a los 60 segundos | Timeout del proxy | `proxy_read_timeout`, ya puesto en `deploy/nginx.conf` |
+| `import cv2` falla en el contenedor | Faltan `libgl1`/`libglib2.0-0` | Ya están en el `Dockerfile`; si construyes otra imagen, acuérdate |
+| Las velocidades parecen multiplicadas | Base de tiempo equivocada | Mira `meta.time_source` del informe: si dice `reloj`, son métricas de webcam y no son comparables con las de un fichero |
+| El disco se llena | `SESSION_STATE_DIR` sin purgar | Sección 11 |

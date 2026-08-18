@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MANIFIESTO = ROOT / "carriles.json"
 DOC_CARRILES = ROOT / "CARRILES.md"
 DOC_ANALISIS = ROOT / "ANALISIS.md"
+DOC_PLANTILLAS = ROOT / "PLANTILLAS.md"
 
 #: Preguntas que ninguna comprobación puede responder. Se imprimen siempre.
 PREGUNTAS_HUMANAS: Tuple[str, ...] = (
@@ -237,6 +238,56 @@ def comprobar_worklog(man: Manifiesto) -> List[str]:
     return fallos
 
 
+def _transiciones_declaradas() -> List[Tuple[str, str]]:
+    """Lee la tabla de transiciones de PLANTILLAS.md como dato.
+
+    La máquina de estados de un carril es una tabla del dominio, así que vive en
+    el documento y se lee de ahí en vez de reimplementarse como condicionales.
+    Añadir una fila a esa tabla añade su comprobación sola.
+    """
+    if not DOC_PLANTILLAS.exists():
+        return []
+    texto = DOC_PLANTILLAS.read_text(encoding="utf-8")
+    filas = re.findall(r"^\|\s*`([A-Z_]+)`\s*\|\s*`([A-Z_]+)`\s*\|", texto, flags=re.MULTILINE)
+    return [(desde, hacia) for desde, hacia in filas]
+
+
+def estados_validos() -> Set[str]:
+    return {estado for fila in _transiciones_declaradas() for estado in fila}
+
+
+def comprobar_estados(man: Manifiesto) -> List[str]:
+    """El estado de cada carril tiene que ser uno de los declarados.
+
+    Un `STATE.md` que diga `CASI_HECHO` o `EN REVISION` no lo detecta nadie
+    leyendo: el orquestador lo trataría como desconocido y seguiría.
+    """
+    validos = estados_validos()
+    if not validos:
+        return ["PLANTILLAS.md no declara ninguna transición de estado"]
+    fallos = []
+    for carril in sorted(man.carriles):
+        state = ROOT / "worklog" / carril / "STATE.md"
+        if not state.exists():
+            continue    # ya lo reporta comprobar_worklog
+        texto = state.read_text(encoding="utf-8")
+        encontrado = re.search(r"^\|\s*\*\*Estado\*\*\s*\|\s*([^|]+?)\s*\|", texto, flags=re.MULTILINE)
+        if not encontrado:
+            fallos.append(f"worklog/{carril}/STATE.md no declara estado en su tabla de cabecera")
+            continue
+        declarado = encontrado.group(1).strip()
+        # La plantilla lista todos los estados separados por `\|`; un carril real
+        # declara uno solo.
+        if "\\|" in declarado or declarado.count(" ") > 0:
+            fallos.append(f"worklog/{carril}/STATE.md declara «{declarado}»: debe ser un único estado")
+        elif declarado not in validos:
+            fallos.append(
+                f"worklog/{carril}/STATE.md declara «{declarado}», que no está en la tabla de "
+                f"PLANTILLAS.md ({', '.join(sorted(validos))})"
+            )
+    return fallos
+
+
 def _ids_requisitos_catalogo() -> Set[str]:
     if not DOC_ANALISIS.exists():
         return set()
@@ -315,6 +366,7 @@ def ejecutar(base: Optional[str], carril: Optional[str]) -> int:
         ("manifiesto y CARRILES.md coinciden", comprobar_doc_coincide(man)),
         ("worklog completo", comprobar_worklog(man)),
         ("trazabilidad requisito → carril", comprobar_trazabilidad(man)),
+        ("estados de carril declarados en PLANTILLAS.md", comprobar_estados(man)),
     ]
     if base:
         etiqueta = f"propiedad de lo cambiado desde {base}"

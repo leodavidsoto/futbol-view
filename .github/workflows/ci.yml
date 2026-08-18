@@ -31,7 +31,13 @@ jobs:
         run: python -c "import football_copilot_v2_backend as b; print(b.app.title)"
 
       - name: Tests
-        run: pytest --cov=fcopilot --cov=football_copilot_v2_backend --cov-report=term-missing
+        run: pytest --cov=fcopilot --cov=football_copilot_v2_backend --cov-report=term-missing --cov-report=json
+
+      # El suelo por módulo es lo que convierte «cubre menos que antes» en un
+      # fallo con nombre. Sin él, borrar un fichero de tests entero baja un poco
+      # el número global y no lo nota nadie.
+      - name: Suelo de cobertura
+        run: python3 tools/check_cobertura.py
 
   frontend:
     name: Frontend (vitest)

@@ -1,0 +1,5 @@
+{
+  "_nota": "Hashes SHA-256 esperados de cada fichero de pesos. Un .pt es un pickle de PyTorch y cargarlo ejecuta código: MODEL_ROOT dice dónde está el fichero, esto dice qué contiene. Rellénalos con `python3 scripts/fetch_weights.py --print-hashes` DESPUÉS de descargarlos de una fuente en la que confíes, y revísalos si alguna vez cambian.",
+  "yolo11x.pt": "TODO(config): sin verificar — ejecuta --print-hashes tras la primera descarga",
+  "osnet_x1_0_imagenet.pth": "TODO(config): sin URL oficial fijada; colócalo a mano y añade su hash"
+}

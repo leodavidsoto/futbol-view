@@ -50,3 +50,6 @@ frontend/.env
 
 # Logs
 *.log
+
+# Informe de cobertura para tools/check_cobertura.py
+coverage.json

@@ -225,3 +225,97 @@ def test_carril_desconocido_es_error_de_uso(manifiesto_real, monkeypatch):
     monkeypatch.setattr(guardia, "_git", _falso_git([]))
     with pytest.raises(guardia.Hallazgo):
         guardia.comprobar_diff(_man(manifiesto_real), "main", "NO_EXISTE")
+
+
+# ── 4. La máquina de estados se lee del documento, no se reimplementa ────
+def test_los_estados_validos_salen_de_plantillas():
+    """Añadir una fila a la tabla de PLANTILLAS.md añade su estado solo."""
+    assert guardia.estados_validos() == {
+        "NO_INICIADO", "EN_CURSO", "LISTO_PARA_REVISION", "HECHO", "BLOQUEADO",
+    }
+
+
+def test_todas_las_transiciones_declaradas_usan_estados_validos():
+    validos = guardia.estados_validos()
+    for desde, hacia in guardia._transiciones_declaradas():
+        assert desde in validos and hacia in validos
+
+
+def test_nadie_aprueba_su_propio_trabajo():
+    """No puede existir una transición EN_CURSO → HECHO: la revisión es cruzada."""
+    assert ("EN_CURSO", "HECHO") not in guardia._transiciones_declaradas()
+
+
+def test_detecta_un_estado_inventado(tmp_path, monkeypatch):
+    plantillas = tmp_path / "PLANTILLAS.md"
+    plantillas.write_text("| `NO_INICIADO` | `EN_CURSO` | x |\n", encoding="utf-8")
+    monkeypatch.setattr(guardia, "DOC_PLANTILLAS", plantillas)
+    fallos = guardia.comprobar_estados(guardia.Manifiesto.cargar())
+    assert any("no está en la tabla" in f for f in fallos)
+
+
+def test_sin_tabla_de_estados_es_un_fallo(tmp_path, monkeypatch):
+    monkeypatch.setattr(guardia, "DOC_PLANTILLAS", tmp_path / "no-existe.md")
+    fallos = guardia.comprobar_estados(guardia.Manifiesto.cargar())
+    assert any("ninguna transición" in f for f in fallos)
+
+
+# ── 5. El suelo de cobertura ────────────────────────────────────────────
+def _cargar_cobertura():
+    ruta = RAIZ / "tools" / "check_cobertura.py"
+    spec = importlib.util.spec_from_file_location("check_cobertura", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+cobertura = _cargar_cobertura()
+
+
+def _informe(porcentajes: dict, total: float = 99.0):
+    return {
+        "files": {k: {"summary": {"percent_covered": v}} for k, v in porcentajes.items()},
+        "totals": {"percent_covered": total},
+    }
+
+
+def test_cada_modulo_medido_tiene_suelo_declarado():
+    """Un módulo nuevo sin suelo pasaría desapercibido hasta que se rompiera."""
+    informe = RAIZ / "coverage.json"
+    if not informe.exists():
+        pytest.skip("hace falta pytest --cov-report=json")
+    _, avisos = cobertura.evaluar(json.loads(informe.read_text(encoding="utf-8")))
+    sin_suelo = [a for a in avisos if "sin suelo declarado" in a]
+    assert not sin_suelo, sin_suelo
+
+
+def test_detecta_un_modulo_por_debajo_de_su_suelo():
+    completo = {m: 100.0 for m in cobertura.MINIMOS}
+    completo["fcopilot/kinematics.py"] = 50.0
+    fallos, _ = cobertura.evaluar(_informe(completo))
+    assert any("kinematics" in f and "< 95%" in f for f in fallos)
+
+
+def test_detecta_un_modulo_que_dejo_de_medirse():
+    """Borrar un fichero de tests entero es exactamente esto."""
+    parcial = {m: 100.0 for m in cobertura.MINIMOS if m != "fcopilot/report.py"}
+    fallos, _ = cobertura.evaluar(_informe(parcial))
+    assert any("report.py" in f and "no aparece" in f for f in fallos)
+
+
+def test_detecta_que_el_total_baja_del_suelo():
+    fallos, _ = cobertura.evaluar(_informe({m: 100.0 for m in cobertura.MINIMOS}, total=10.0))
+    assert any("TOTAL" in f for f in fallos)
+
+
+def test_avisa_cuando_un_suelo_se_quedo_corto():
+    """Sin esto, la cobertura se erosiona hasta el mínimo declarado y ahí se queda."""
+    holgado = {m: 100.0 for m in cobertura.MINIMOS}
+    _, avisos = cobertura.evaluar(_informe(holgado))
+    assert any("súbelo" in a for a in avisos)
+
+
+def test_toda_excepcion_de_cobertura_tiene_su_motivo_escrito():
+    """Un número bajo sin motivo es un número que alguien baja cuando le estorba."""
+    sin_motivo = [m for m, (minimo, motivo) in cobertura.MINIMOS.items() if minimo < 85 and not motivo]
+    assert not sin_motivo, f"suelos bajos sin justificar: {sin_motivo}"
