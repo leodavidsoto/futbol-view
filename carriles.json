@@ -1,0 +1,146 @@
+{
+  "version": 1,
+  "_nota": "Fuente de verdad del corte de carriles. CARRILES.md renderiza esto en prosa; tools/check_carriles.py comprueba que ambos coincidan. Editar uno sin el otro rompe la suite a propósito.",
+
+  "carriles": {
+    "PLATAFORMA": {
+      "objetivo": "Que las reglas de este repositorio las haga cumplir un comando, no la buena voluntad de quien tenga prisa.",
+      "depende_de": [],
+      "depende_para_cerrar": [],
+      "requisitos": ["R-18", "R-23"],
+      "rutas": [
+        "carriles.json",
+        "tools/**",
+        "tests/test_gobernanza.py",
+        "tests/conftest.py",
+        "pytest.ini",
+        "requirements-dev.txt",
+        ".github/**",
+        "AGENTS.md",
+        "CARRILES.md",
+        "PROMPTS.md",
+        "PLANTILLAS.md",
+        "ANALISIS.md",
+        "PROMPT_ORQUESTACION.md",
+        "README.md",
+        "TESTING.md",
+        ".gitignore",
+        ".claude/**",
+        "worklog/README.md",
+        "worklog/PLATAFORMA/**"
+      ]
+    },
+
+    "NUCLEO": {
+      "objetivo": "Ser la única definición de qué significa una métrica de partido, y que esa definición sea comprobable sin vídeo, sin modelo y sin servidor.",
+      "depende_de": [],
+      "depende_para_cerrar": ["PLATAFORMA"],
+      "requisitos": ["R-04", "R-05", "R-07", "R-09", "R-14", "R-20", "R-22"],
+      "rutas": [
+        "fcopilot/__init__.py",
+        "fcopilot/py.typed",
+        "fcopilot/kinematics.py",
+        "fcopilot/possession.py",
+        "fcopilot/report.py",
+        "fcopilot/geometry.py",
+        "tests/test_kinematics.py",
+        "tests/test_possession.py",
+        "tests/test_report.py",
+        "tests/test_geometry.py",
+        "worklog/NUCLEO/**"
+      ]
+    },
+
+    "PERCEPCION": {
+      "objetivo": "Convertir píxeles en jugadores con identidad y equipo estables, y degradarse con dignidad cuando falten las dependencias pesadas.",
+      "depende_de": ["NUCLEO"],
+      "depende_para_cerrar": ["PLATAFORMA"],
+      "requisitos": ["R-01", "R-02", "R-03", "R-16"],
+      "rutas": [
+        "fcopilot/detection.py",
+        "fcopilot/tracking.py",
+        "fcopilot/teams.py",
+        "fcopilot/osnet.py",
+        "fcopilot/analyzer.py",
+        "tests/test_detection.py",
+        "tests/test_tracking.py",
+        "tests/test_teams.py",
+        "tests/test_analyzer.py",
+        "tests/test_osnet.py",
+        "worklog/PERCEPCION/**"
+      ]
+    },
+
+    "API": {
+      "objetivo": "Exponer el análisis por HTTP con una frontera de confianza que hoy no existe: aislar sesiones de verdad, no por convención.",
+      "depende_de": ["NUCLEO", "PERCEPCION"],
+      "depende_para_cerrar": ["PLATAFORMA"],
+      "requisitos": ["R-08", "R-10", "R-13", "R-15", "R-17", "R-19", "R-21", "R-24", "R-25", "R-27", "R-28"],
+      "rutas": [
+        "football_copilot_v2_backend.py",
+        "fcopilot/sessions.py",
+        "fcopilot/config.py",
+        "tests/test_api.py",
+        "tests/test_sessions.py",
+        "tests/test_config.py",
+        "worklog/API/**"
+      ]
+    },
+
+    "CLIENTE": {
+      "objetivo": "Que la mitad que no se refactorizó deje de ser un fichero de 1915 líneas con cuarenta useState, y que se pueda probar.",
+      "depende_de": ["API"],
+      "depende_para_cerrar": ["PLATAFORMA"],
+      "requisitos": ["R-06", "R-11", "R-12"],
+      "rutas": [
+        "frontend/**",
+        "worklog/CLIENTE/**"
+      ]
+    },
+
+    "OPERACION": {
+      "objetivo": "Que alguien que no escribió esto pueda levantarlo, con los pesos correctos, y sepa qué hacer cuando se rompa.",
+      "depende_de": ["API"],
+      "depende_para_cerrar": ["PLATAFORMA"],
+      "requisitos": ["R-26", "R-29", "R-30"],
+      "rutas": [
+        "Dockerfile",
+        "docker-compose.yml",
+        ".dockerignore",
+        "deploy/**",
+        "scripts/**",
+        "requirements_v2.txt",
+        "INSTALACION_V2.md",
+        "QUICK_START.md",
+        "worklog/OPERACION/**"
+      ]
+    }
+  },
+
+  "rutas_compartidas": {
+    "worklog/EVENTS.jsonl": {
+      "dueno": "PLATAFORMA",
+      "modo": "append",
+      "nota": "Todos los carriles añaden líneas; nadie edita ni borra las anteriores. El guardia rechaza cualquier diff con líneas eliminadas."
+    },
+    "fcopilot/config.py": {
+      "dueno": "API",
+      "modo": "propietario",
+      "nota": "NUCLEO y PERCEPCION leen las constantes de dominio (PERSON_CLASS, BALL_CLASS, FIELD_W_METERS). Añadir una clave de configuración se le pide a API por el worklog."
+    },
+    "fcopilot/__init__.py": {
+      "dueno": "NUCLEO",
+      "modo": "propietario",
+      "nota": "Es la superficie pública del paquete. PERCEPCION y API exportan desde aquí; añadir un símbolo se le pide a NUCLEO."
+    },
+    "tests/conftest.py": {
+      "dueno": "PLATAFORMA",
+      "modo": "propietario",
+      "nota": "El detector guionizado que hace que la suite corra sin pesos vive aquí. Cambiarlo afecta a todos los carriles a la vez."
+    }
+  },
+
+  "rutas_congeladas": {
+    "FootballCopilot_v2.jsx": "Código muerto: la interfaz viva es frontend/src/App.jsx. Congelado para que no siga divergiendo en silencio. Descongelarlo o borrarlo es una decisión de una puerta (A-05) y exige tocar este fichero a propósito."
+  }
+}
