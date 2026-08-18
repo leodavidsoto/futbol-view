@@ -18,6 +18,7 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import tempfile
 import threading
 import time
@@ -38,7 +39,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 try:  # OpenCV es obligatorio en producción; sin él sólo funcionan los tests puros.
@@ -63,6 +64,14 @@ MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "12"))
 SESSION_STATE_DIR = Path(os.getenv("SESSION_STATE_DIR", ".session_state"))
 MODEL_ROOT = Path(os.getenv("MODEL_ROOT", ".")).resolve()
 WORKER_THREADS = int(os.getenv("WORKER_THREADS", "2"))
+#: Credencial opcional. Vacía = servicio abierto, que sólo es aceptable en local.
+#: Ver la ambigüedad A-01 de ANALISIS.md: mientras no se responda si esto se
+#: expone, la autenticación existe pero viene apagada para no romper el uso local.
+API_KEY = os.getenv("API_KEY", "").strip()
+#: Análisis de vídeo simultáneos en todo el servicio. Con WORKER_THREADS=2, más
+#: de dos no van más rápido: sólo compiten por los mismos hilos y multiplican la
+#: memoria y el disco temporal ocupados.
+MAX_CONCURRENT_ANALYSES = int(os.getenv("MAX_CONCURRENT_ANALYSES", str(max(1, WORKER_THREADS))))
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/jpg", "image/png", "image/webp"}
 START_TIME = time.time()
 
@@ -142,6 +151,10 @@ session_manager = SessionManager(
     ttl_seconds=SESSION_TTL_SECONDS,
     max_sessions=MAX_SESSIONS,
 )
+#: Plazas de análisis de vídeo simultáneo en todo el servicio.
+analysis_slots = threading.BoundedSemaphore(MAX_CONCURRENT_ANALYSES)
+
+
 class WorkerPool:
     """Pool compartido para el trabajo pesado, creado bajo demanda.
 
@@ -178,6 +191,13 @@ async def lifespan(_: FastAPI):
         "Football Copilot %s — yolo=%s sahi=%s norfair=%s bytetrack=%s torch=%s",
         FCOPILOT_VERSION, YOLO_AVAILABLE, SAHI_AVAILABLE, NORFAIR_AVAILABLE, BYTETRACK_AVAILABLE, TORCH_AVAILABLE,
     )
+    if not API_KEY:
+        logger.warning(
+            "SERVICIO SIN AUTENTICACION: cualquiera que conozca o adivine un session_id "
+            "puede leer los datos de otro partido. Aceptable en local; antes de exponerlo, "
+            "define API_KEY%s.",
+            " y CORS_ALLOW_ORIGINS (ahora acepta cualquier origen)" if "*" in allowed_origins else "",
+        )
     try:
         yield
     finally:
@@ -201,6 +221,32 @@ app.add_middleware(
 # ─────────────────────────────────────────────────────────────
 def _http(status: int, detail: str) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
+
+
+#: Rutas que no exigen credencial ni con `API_KEY` puesta: sonda de vida y
+#: preflight de CORS. Todo lo demás bajo /api y /ws la exige.
+RUTAS_ABIERTAS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
+
+
+def _credencial_valida(provided: Optional[str]) -> bool:
+    """Comparación en tiempo constante: comparar con `==` filtra el prefijo."""
+    return bool(API_KEY) and secrets.compare_digest(provided or "", API_KEY)
+
+
+@app.middleware("http")
+async def exigir_credencial(request: Request, call_next):
+    """Frontera de confianza del servicio.
+
+    Va en un middleware y no en una dependencia por ruta a propósito: una ruta
+    nueva queda protegida sin que su autor se acuerde de nada. Olvidarlo deja de
+    ser posible, que es la diferencia entre una regla y un guardia.
+    """
+    if not API_KEY or request.method == "OPTIONS" or request.url.path in RUTAS_ABIERTAS:
+        return await call_next(request)
+    provided = request.headers.get("x-api-key") or request.query_params.get("api_key")
+    if not _credencial_valida(provided):
+        return JSONResponse({"detail": "credencial invalida o ausente"}, status_code=401)
+    return await call_next(request)
 
 
 def get_session_id(request: Request) -> str:
@@ -284,6 +330,12 @@ def health(session_id: Optional[str] = Query(default=None)):
             "torch": TORCH_AVAILABLE,
             "osnet": osnet_weights_available(DEFAULTS["osnet_weight_path"]),
             "opencv": cv2 is not None,
+        },
+        "limits": {
+            "auth_required": bool(API_KEY),
+            "max_upload_mb": MAX_UPLOAD_MB,
+            "max_concurrent_analyses": MAX_CONCURRENT_ANALYSES,
+            "cors_any_origin": "*" in allowed_origins,
         },
         "sessions": {
             "count": stats["count"],
@@ -513,6 +565,14 @@ async def ws_stream(ws: WebSocket):
         await ws.close(code=1013)
         return
 
+    if API_KEY and not _credencial_valida(
+        ws.headers.get("x-api-key") or ws.query_params.get("api_key")
+    ):
+        # El middleware HTTP no cubre WebSockets: aquí se comprueba a mano.
+        await ws.send_text(json.dumps({"error": "credencial invalida o ausente"}))
+        await ws.close(code=1008)
+        return
+
     lease = f"{session_id}:websocket"
     if not analyzer.try_acquire_session(lease):
         await ws.send_text(json.dumps({"error": "El analizador esta ocupado con otra tarea"}))
@@ -527,7 +587,11 @@ async def ws_stream(ws: WebSocket):
             if frame is None:
                 await ws.send_text(json.dumps({"error": "frame ilegible"}))
                 continue
-            result = await run_in_worker(analyzer.process_frame, frame, time.monotonic() - started)
+            # Sin `timestamp`: esto es directo y no existe un tiempo de vídeo que
+            # consultar. Pasarle el reloj como si fuera tiempo de vídeo etiquetaría
+            # las métricas de webcam como comparables con las de un fichero, y no
+            # lo son. El analizador registra la fuente `reloj` por su cuenta.
+            result = await run_in_worker(analyzer.process_frame, frame)
             await ws.send_text(json.dumps(result))
     except WebSocketDisconnect:
         logger.info("WebSocket desconectado (%s)", session_id)
@@ -577,9 +641,22 @@ async def process_video(file: UploadFile = File(...), session_id: str = Depends(
         await file.close()
         raise _http(409, "El analizador esta ocupado con otra tarea")
 
+    # El lease de arriba impide dos análisis en la MISMA sesión; esto impide que
+    # N sesiones saturen los WORKER_THREADS entre todas. Sin él, doce sesiones
+    # subiendo a la vez ocupan doce ficheros temporales de hasta 1 GB y compiten
+    # por dos hilos: nadie termina y el disco se llena.
+    if not analysis_slots.acquire(blocking=False):
+        analyzer.release_session(lease)
+        await file.close()
+        raise _http(
+            429,
+            f"El servicio ya esta analizando {MAX_CONCURRENT_ANALYSES} videos. Reintenta en unos minutos.",
+        )
+
     try:
         tmp_path = await _spool_upload(file)
     except BaseException:
+        analysis_slots.release()
         analyzer.release_session(lease)
         raise
 
@@ -619,6 +696,7 @@ async def process_video(file: UploadFile = File(...), session_id: str = Depends(
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_path)
             analyzer.release_session(lease)
+            analysis_slots.release()
             save_session(session_id, analyzer)
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
