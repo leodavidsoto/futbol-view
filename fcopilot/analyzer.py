@@ -23,7 +23,14 @@ import numpy as np
 from fcopilot.config import default_runtime_config, merge_config
 from fcopilot.detection import Detector
 from fcopilot.geometry import find_homography, perspective_transform_point
-from fcopilot.kinematics import KinematicsConfig, PlayerKinematics, Sample
+from fcopilot.kinematics import (
+    TIME_SOURCE_CLOCK,
+    TIME_SOURCE_VIDEO,
+    KinematicsConfig,
+    PlayerKinematics,
+    Sample,
+    TimeBaseError,
+)
 from fcopilot.osnet import OSNetTeamClassifier
 from fcopilot.possession import PossessionTracker
 from fcopilot.report import build_report
@@ -114,6 +121,10 @@ class FootballAnalyzer:
         self._last_wall = time.monotonic()
         self._last_t: Optional[float] = None
         self._t_origin: Optional[float] = None
+        #: Fuente de tiempo del análisis en curso. Se fija con la primera
+        #: llamada a `process_frame` y no puede cambiar: mezclar tiempo de vídeo
+        #: con reloj de pared produce métricas que parecen correctas y no lo son.
+        self.time_source: Optional[str] = None
         self.elapsed_s = 0.0
 
         self.active_session: Optional[str] = None
@@ -248,13 +259,34 @@ class FootballAnalyzer:
 
     # ── Frame principal ────────────────────────────────────────────────
     def process_frame(self, frame: np.ndarray, timestamp: Optional[float] = None) -> Dict[str, Any]:
-        """Procesa un frame. *timestamp* son segundos de vídeo; si falta se usa el reloj."""
+        """Procesa un frame.
+
+        *timestamp* son segundos de vídeo. Si falta se usa el reloj de la
+        cámara, que es legítimo **sólo en directo**: en directo no existe un
+        tiempo de vídeo que consultar. Lo que no es legítimo es mezclar las dos
+        fuentes en el mismo análisis, y eso lanza :class:`TimeBaseError`.
+
+        La fuente queda registrada en ``self.time_source`` y viaja hasta el
+        informe. Ninguna comprobación local puede distinguir el reloj de pared
+        del tiempo de vídeo —los dos son monótonos y crecen igual—, así que la
+        única defensa real es declarar cuál se usó y propagarlo.
+        """
         with self.state_lock:
             total_start = time.perf_counter()
             now = time.monotonic()
             wall_dt = now - self._last_wall
             self._last_wall = now
             processing_fps = self._push_fps(1.0 / max(wall_dt, 1e-6))
+
+            fuente = TIME_SOURCE_VIDEO if timestamp is not None else TIME_SOURCE_CLOCK
+            if self.time_source is None:
+                self.time_source = fuente
+            elif self.time_source != fuente:
+                raise TimeBaseError(
+                    f"este análisis empezó con base de tiempo «{self.time_source}» y "
+                    f"ahora llega una muestra con base «{fuente}». Mezclarlas produce "
+                    f"métricas incomparables: reinicia la sesión antes de cambiar de fuente."
+                )
 
             t = float(timestamp) if timestamp is not None else now
             if self._t_origin is None:
@@ -304,6 +336,7 @@ class FootballAnalyzer:
                     "tracker": self.tracker_type,
                     "calibrated": self.is_calibrated,
                     "elapsed_s": round(t, 2),
+                    "time_source": self.time_source,
                 },
                 "timings_ms": {
                     "detect": round(detect_ms, 2),
@@ -469,6 +502,7 @@ class FootballAnalyzer:
                 calibrated=self.is_calibrated,
                 config=self.public_config(),
                 include_positions=include_positions,
+                time_source=self.time_source or TIME_SOURCE_VIDEO,
             )
 
     def public_config(self) -> Dict[str, Any]:
@@ -495,6 +529,7 @@ class FootballAnalyzer:
         self.metrics = self._empty_metrics()
         self._last_t = None
         self._t_origin = None
+        self.time_source = None
         self.elapsed_s = 0.0
 
     def soft_reset(self) -> None:
@@ -618,6 +653,7 @@ class FootballAnalyzer:
                 "homography": self.homography.tolist() if self.homography is not None else None,
                 "elapsed_s": self.elapsed_s,
                 "last_t": self._last_t,
+                "time_source": self.time_source,
                 "created_at": self.created_at,
                 "last_accessed_at": self.last_accessed_at,
                 "metrics": self.metrics,
@@ -652,6 +688,7 @@ class FootballAnalyzer:
             self.elapsed_s = float(data.get("elapsed_s", 0.0))
             self._last_t = data.get("last_t")
             self._t_origin = 0.0 if self._last_t is not None else None
+            self.time_source = data.get("time_source")
             self.created_at = float(data.get("created_at", time.time()))
             self.last_accessed_at = float(data.get("last_accessed_at", time.time()))
             self.metrics = {**self._empty_metrics(), **(data.get("metrics") or {})}

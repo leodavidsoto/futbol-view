@@ -125,3 +125,109 @@ def test_el_filtro_de_cesped_cambia_las_features():
     # El tono medido por la variante grass-aware está más cerca del azul real.
     azul_hsv = cv2.cvtColor(np.uint8([[AZUL]]), cv2.COLOR_BGR2HSV)[0, 0].astype(float)
     assert abs(grass[0] - azul_hsv[0]) < abs(base[0] - azul_hsv[0])
+
+
+# ── Extremos de la ventana de votos ─────────────────────────────────────
+#
+# El voto por track es lo que impide que un jugador cambie de equipo cada vez
+# que una sombra le cambia el color de la camiseta. Estaba probado en el caso
+# central y no en sus bordes: un solo voto, la ventana llena, el empate y el
+# cambio a mitad. También se fija aquí el orden determinista de los centroides,
+# que es lo que impide que `team_1` y `team_2` se intercambien entre reajustes.
+
+from collections import deque
+
+from fcopilot.teams import UNKNOWN, ColorTeamClassifier
+
+
+def _con_votos(votos, ventana=15):
+    """Clasificador con la cola de votos de un track ya poblada."""
+    clf = ColorTeamClassifier(vote_window=ventana)
+    clf._votes["t"] = deque(votos, maxlen=ventana)
+    return clf
+
+
+def test_un_track_sin_votos_es_desconocido():
+    assert ColorTeamClassifier()._vote("t") == UNKNOWN
+
+
+def test_un_track_que_no_existe_es_desconocido():
+    assert _con_votos(["team_1"])._vote("otro") == UNKNOWN
+
+
+def test_sin_track_id_no_hay_voto_posible():
+    assert ColorTeamClassifier()._vote(None) == UNKNOWN
+
+
+def test_un_solo_voto_decide():
+    assert _con_votos(["team_2"])._vote("t") == "team_2"
+
+
+def test_la_mayoria_gana():
+    assert _con_votos(["team_1", "team_1", "team_2"])._vote("t") == "team_1"
+
+
+def test_un_frame_raro_no_cambia_el_equipo():
+    """El caso de uso real: una sombra tiñe la camiseta un frame."""
+    assert _con_votos(["team_1"] * 9 + ["team_2"])._vote("t") == "team_1"
+
+
+def test_un_empate_es_determinista():
+    """Empatados, gana el que apareció primero: da igual cuál, pero no puede bailar."""
+    clf = _con_votos(["team_1", "team_2"])
+    assert clf._vote("t") == clf._vote("t") == "team_1"
+
+
+def test_la_ventana_olvida_lo_viejo():
+    """Un jugador que cambia de equipo de verdad (corrección manual) debe poder cambiar."""
+    clf = _con_votos(["team_1"] * 3 + ["team_2"] * 3, ventana=4)
+    assert clf._vote("t") == "team_2", "con ventana 4 sólo quedan un team_1 y tres team_2"
+
+
+def test_la_ventana_esta_acotada():
+    """Un partido largo no puede acumular votos sin límite."""
+    clf = ColorTeamClassifier(vote_window=5)
+    for _ in range(100):
+        clf._votes["t"].append("team_1")
+    assert len(clf._votes["t"]) == 5
+
+
+def test_cada_track_vota_por_separado():
+    clf = ColorTeamClassifier(vote_window=5)
+    clf._votes["a"].extend(["team_1", "team_1"])
+    clf._votes["b"].extend(["team_2", "team_2"])
+    assert clf._vote("a") == "team_1"
+    assert clf._vote("b") == "team_2"
+
+
+# ── Determinismo del orden de clusters ──────────────────────────────────
+def test_dos_ajustes_seguidos_no_intercambian_los_equipos():
+    """Sin orden determinista, cada reajuste podía renombrar los dos equipos."""
+    rng = np.random.default_rng(7)
+    claro = rng.normal([20, 200, 200], 3, size=(40, 3))
+    oscuro = rng.normal([120, 200, 60], 3, size=(40, 3))
+
+    etiquetas = []
+    for _ in range(3):
+        clf = ColorTeamClassifier(min_samples=8)
+        clf._features = [*claro, *oscuro]
+        clf._fit_features()
+        assert clf.is_fitted
+        etiquetas.append((clf._raw_label(claro[0]), clf._raw_label(oscuro[0])))
+    assert len(set(etiquetas)) == 1, f"las etiquetas bailan entre ajustes: {etiquetas}"
+
+
+def test_no_ajusta_si_los_dos_grupos_son_del_mismo_color():
+    """Forzar dos clusters sobre un solo kit produciría etiquetas al azar."""
+    rng = np.random.default_rng(11)
+    clf = ColorTeamClassifier(min_samples=8)
+    clf._features = list(rng.normal([60, 120, 120], 1, size=(40, 3)))
+    clf._fit_features()
+    assert clf.is_fitted is False
+
+
+def test_no_ajusta_con_muestras_identicas():
+    clf = ColorTeamClassifier(min_samples=4)
+    clf._features = [np.array([50.0, 100.0, 100.0])] * 10
+    clf._fit_features()
+    assert clf.is_fitted is False
