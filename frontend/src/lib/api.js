@@ -14,9 +14,28 @@ export const API_URL = RAW_API.replace(/\/$/, "");
 const RAW_WS = import.meta?.env?.VITE_WS_URL || API_URL.replace(/^http/, "ws");
 export const WS_BASE = RAW_WS.replace(/\/$/, "");
 
-/** URL del WebSocket de cámara en vivo, con la sesión de esta pestaña. */
+/**
+ * Credencial del backend, si el servicio la exige (`API_KEY` en el servidor).
+ *
+ * Vacía por defecto: el servicio viene abierto y el uso local no necesita nada.
+ * Cuando el backend la exige, sin esto toda petición sería un 401.
+ */
+export const API_KEY = (import.meta?.env?.VITE_API_KEY || "").trim();
+
+/** Cabeceras de autenticación, vacías si no hay credencial configurada. */
+export function authHeaders() {
+  return API_KEY ? { "x-api-key": API_KEY } : {};
+}
+
+/**
+ * URL del WebSocket de cámara en vivo, con la sesión de esta pestaña.
+ *
+ * La credencial va en el query string porque un WebSocket del navegador no
+ * admite cabeceras propias; el backend la acepta por las dos vías.
+ */
 export function wsStreamUrl(sessionId = getSessionId()) {
-  return `${WS_BASE}/ws/stream?session_id=${encodeURIComponent(sessionId)}`;
+  const base = `${WS_BASE}/ws/stream?session_id=${encodeURIComponent(sessionId)}`;
+  return API_KEY ? `${base}&api_key=${encodeURIComponent(API_KEY)}` : base;
 }
 
 export class ApiError extends Error {
@@ -42,7 +61,7 @@ async function describeError(response) {
 
 /** `fetch` con sesión, comprobación de estado y error legible. */
 export async function apiFetch(path, { method = "GET", body, signal, json = true, sessionId } = {}) {
-  const headers = { "x-session-id": sessionId || getSessionId() };
+  const headers = { "x-session-id": sessionId || getSessionId(), ...authHeaders() };
   let payload = body;
   if (body !== undefined && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";

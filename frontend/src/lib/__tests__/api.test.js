@@ -107,3 +107,58 @@ describe("wsStreamUrl", () => {
     expect(wsStreamUrl()).toContain("session_id=sesion-de-prueba");
   });
 });
+
+
+// ── Credencial del backend ──────────────────────────────────────────────
+//
+// Solicitud del carril API: cuando el servicio define API_KEY, toda petición
+// sin ella es un 401. La credencial se lee de VITE_API_KEY al cargar el módulo,
+// así que probar el caso "con credencial" exige reimportarlo.
+
+describe("credencial", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("sin credencial configurada no añade cabecera", async () => {
+    const { authHeaders } = await import("../api.js");
+    expect(authHeaders()).toEqual({});
+  });
+
+  it("sin credencial la URL del WebSocket no lleva api_key", async () => {
+    const { wsStreamUrl } = await import("../api.js");
+    expect(wsStreamUrl("s1")).not.toContain("api_key");
+  });
+
+  it("con credencial la manda en la cabecera", async () => {
+    vi.stubEnv("VITE_API_KEY", "secreto");
+    vi.resetModules();
+    const { authHeaders } = await import("../api.js");
+    expect(authHeaders()).toEqual({ "x-api-key": "secreto" });
+  });
+
+  it("con credencial toda petición la lleva", async () => {
+    vi.stubEnv("VITE_API_KEY", "secreto");
+    vi.resetModules();
+    const modulo = await import("../api.js");
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await modulo.apiFetch("/api/config");
+    expect(fetchMock.mock.calls[0][1].headers["x-api-key"]).toBe("secreto");
+  });
+
+  it("el WebSocket la lleva en el query string, porque no admite cabeceras", async () => {
+    vi.stubEnv("VITE_API_KEY", "secreto con espacio");
+    vi.resetModules();
+    const { wsStreamUrl } = await import("../api.js");
+    expect(wsStreamUrl("s1")).toContain("api_key=secreto%20con%20espacio");
+  });
+
+  it("una credencial de sólo espacios cuenta como ausente", async () => {
+    vi.stubEnv("VITE_API_KEY", "   ");
+    vi.resetModules();
+    const { authHeaders } = await import("../api.js");
+    expect(authHeaders()).toEqual({});
+  });
+});
