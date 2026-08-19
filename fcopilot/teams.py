@@ -90,6 +90,17 @@ class ColorTeamClassifier:
         hsv = cv2.cvtColor(cv2.resize(torso, (24, 24)), cv2.COLOR_BGR2HSV)
         return hsv.reshape(-1, 3).mean(axis=0).astype(np.float64)
 
+    def describe(self, frame: np.ndarray, bbox: BBox) -> Optional[np.ndarray]:
+        """Descriptor de apariencia del jugador, o ``None`` si no se puede sacar.
+
+        Es el mismo vector que usa la clasificación de equipo, expuesto aparte
+        porque sirve para otra cosa: decidir si dos tracklets son el mismo
+        jugador. El color del kit distingue bien entre equipos y mal entre
+        compañeros, así que **filtra fusiones absurdas sin resolver las
+        difíciles** — que es exactamente lo que se le pide como primer filtro.
+        """
+        return self._extract_features(frame, bbox)
+
     # ── Entrenamiento ──────────────────────────────────────────────────
     #: Separación mínima entre centroides (unidades HSV) para aceptar el ajuste.
     min_separation = 8.0

@@ -263,6 +263,15 @@ class OSNetTeamClassifier:
         except Exception:  # pragma: no cover
             return None
 
+    def describe(self, frame: np.ndarray, bbox: Sequence[float]) -> Optional[np.ndarray]:
+        """Descriptor de apariencia (512-d, normalizado) para fusionar tracklets.
+
+        Es mucho mejor discriminador que el color del kit —distingue entre
+        compañeros del mismo equipo, que es donde el color no llega— pero sólo
+        está disponible con ``torch`` instalado y los pesos presentes.
+        """
+        return self._embed(frame, bbox)
+
     def fit(self, frame: np.ndarray, bboxes: Sequence[Sequence[float]]) -> None:
         """OSNet se ajusta de forma incremental desde :meth:`predict`."""
 

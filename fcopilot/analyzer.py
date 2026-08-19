@@ -41,6 +41,7 @@ from fcopilot.possession import PossessionTracker
 from fcopilot.report import build_report
 from fcopilot.teams import ColorTeamClassifier, GrassAwareTeamClassifier
 from fcopilot.tracking import SimpleCentroidTracker
+from fcopilot.tracklets import MergeConfig, Tracklet, merge_tracklets
 
 logger = logging.getLogger("fcopilot.analyzer")
 
@@ -116,6 +117,8 @@ class FootballAnalyzer:
         self.player_teams: Dict[str, str] = {}
         self.player_names: Dict[str, str] = {}
         self.tracks: Dict[int, Dict[str, Any]] = {}
+        #: Resumen de la última fusión de tracklets, o None si no se hizo.
+        self.last_merge: Optional[Dict[str, Any]] = None
         self.ball_positions: List[Dict[str, float]] = []
         self.ball_last_seen: Optional[int] = None
         self.possession = PossessionTracker()
@@ -426,6 +429,7 @@ class FootballAnalyzer:
             predicted = self.team_clf.predict(frame, bbox, track_id=tid)
             if predicted != "unknown":
                 track["team"] = predicted
+        self._accumulate_appearance(track, frame, bbox)
         if key in self.player_names:
             track["name"] = self.player_names[key]
 
@@ -462,6 +466,128 @@ class FootballAnalyzer:
             "sprints": kin.sprints,
             "trail": kin.trail(20),
         }
+
+    #: Cada cuántos frames analizados se actualiza el descriptor de apariencia.
+    #: Extraerlo en todos duplicaría el trabajo del clasificador de color sin
+    #: mejorar una media que ya converge en pocas muestras.
+    APPEARANCE_EVERY = 5
+
+    def _accumulate_appearance(self, track: Dict[str, Any], frame, bbox) -> None:
+        """Mantiene un descriptor medio del jugador, para fusionar tracklets.
+
+        Se guarda una media incremental y no la lista de descriptores: la lista
+        crecería sin tope durante todo el partido, y la media es lo único que se
+        usa después.
+        """
+        if track.get("appearance_n", 0) and track["appearance_n"] % self.APPEARANCE_EVERY:
+            track["appearance_n"] += 1
+            return
+        describe = getattr(self.team_clf, "describe", None)
+        if describe is None:
+            return
+        try:
+            descriptor = describe(frame, bbox)
+        except Exception:                      # noqa: BLE001 — nunca tumbar el análisis
+            return
+        if descriptor is None:
+            return
+        descriptor = np.asarray(descriptor, dtype=np.float64).ravel()
+        acumulado = track.get("appearance")
+        if acumulado is None or acumulado.shape != descriptor.shape:
+            track["appearance"] = descriptor
+            track["appearance_n"] = 1
+            return
+        n = track.get("appearance_n", 1)
+        track["appearance"] = (acumulado * n + descriptor) / (n + 1)
+        track["appearance_n"] = n + 1
+
+    def _build_tracklet(self, tid: int, track: Dict[str, Any]) -> Optional[Tracklet]:
+        """Convierte un track del analizador en un candidato a fusión.
+
+        Devuelve ``None`` para un track sin muestras: no hay nada que coser.
+        """
+        kin: PlayerKinematics = track["kinematics"]
+        if not kin.samples or kin.first_t is None or kin.last_t is None:
+            return None
+        usar_mundo = self.is_calibrated and kin.samples[-1].has_world
+
+        def punto(sample) -> Tuple[float, float]:
+            if usar_mundo and sample.has_world:
+                return float(sample.wx), float(sample.wy)
+            return float(sample.x), float(sample.y)
+
+        primero, ultimo = punto(kin.samples[0]), punto(kin.samples[-1])
+        velocidad = (0.0, 0.0)
+        if len(kin.samples) >= 2:
+            anterior, actual = kin.samples[-2], kin.samples[-1]
+            dt = actual.t - anterior.t
+            if dt > 0:
+                px, py = punto(anterior)
+                velocidad = ((ultimo[0] - px) / dt, (ultimo[1] - py) / dt)
+
+        # La confianza del equipo predicho se queda deliberadamente por debajo
+        # del umbral de veto. La clasificación automática se midió repartiendo
+        # 35/17 cuando debía ser mitad y mitad: dejarla vetar fusiones
+        # propagaría su error a las identidades. Una asignación manual sí veta,
+        # porque ésa la hizo una persona mirando.
+        manual = str(tid) in self.player_teams
+        return Tracklet(
+            track_id=tid,
+            first_t=kin.first_t,
+            last_t=kin.last_t,
+            first_xy=primero,
+            last_xy=ultimo,
+            last_velocity=velocidad,
+            embedding=track.get("appearance"),
+            team=track.get("team", "unknown"),
+            team_confidence=1.0 if manual else 0.5,
+            samples=len(kin.samples),
+        )
+
+    def merge_tracklets(self, config: Optional[MergeConfig] = None) -> Dict[str, Any]:
+        """Cose los tracks que sean el mismo jugador partido en trozos.
+
+        Es un post-proceso: no toca el bucle de frames y se puede llamar cuando
+        el análisis ya terminó. **Modifica el estado de la sesión** —los tracks
+        absorbidos desaparecen— así que no es idempotente en el sentido de que
+        una segunda llamada trabaja sobre el resultado de la primera, aunque en
+        la práctica converge porque ya no quedan candidatos.
+
+        Devuelve el resumen de :func:`fcopilot.tracklets.merge_tracklets`, que
+        dice cuántas identidades había y cuántas quedan. Ese número es lo que
+        hay que mirar para saber si esto sirve de algo con un vídeo concreto.
+        """
+        with self.state_lock:
+            if config is None:
+                config = MergeConfig(
+                    units="m" if self.is_calibrated else "px",
+                    pixels_per_meter=self.kin_config.pixels_per_meter,
+                    max_speed_kmh=self.kin_config.max_speed_kmh,
+                )
+            candidatos = []
+            for tid, track in self.tracks.items():
+                tracklet = self._build_tracklet(tid, track)
+                if tracklet is not None:
+                    candidatos.append(tracklet)
+
+            resultado = merge_tracklets(candidatos, config)
+            # Se absorbe de más tardío a más temprano para que la raíz acabe con
+            # la velocidad instantánea del trozo que termina el último.
+            for merge in sorted(resultado.merges, key=lambda m: m.gap_s):
+                raiz = resultado.mapping.get(merge.tail_id, merge.tail_id)
+                absorbido = self.tracks.get(merge.tail_id)
+                destino = self.tracks.get(raiz)
+                if absorbido is None or destino is None or raiz == merge.tail_id:
+                    continue
+                destino["kinematics"].absorb(absorbido["kinematics"])
+                if destino.get("team", "unknown") == "unknown":
+                    destino["team"] = absorbido.get("team", "unknown")
+                self.tracks.pop(merge.tail_id, None)
+
+            resumen = resultado.summary()
+            resumen["units"] = config.units
+            self.last_merge = resumen
+            return resumen
 
     def _process_ball(self, ball_candidates, players_out, dt: float) -> Optional[Dict[str, Any]]:
         ball_info = self._track_ball(ball_candidates)
@@ -583,6 +709,7 @@ class FootballAnalyzer:
     def _reset_common(self) -> None:
         self._init_tracker()
         self.tracks = {}
+        self.last_merge = None
         self.ball_positions = []
         self.ball_last_seen = None
         self.frame_count = 0

@@ -493,3 +493,113 @@ def test_stats_no_repite_claves(analyzer, fake_yolo, green_frame):
     stats = salida[-1]["stats"]
     assert stats["play_area"] is True
     assert not isinstance(stats["play_area"], list)
+
+
+# ── Fusión de tracklets ─────────────────────────────────────────────────
+def _track_recto(analyzer, tid: int, t0: float, x0: float, pasos: int = 25, dx: float = 4.0):
+    """Un track en línea recta, en píxeles, dentro del analizador."""
+    from fcopilot.kinematics import PlayerKinematics, Sample
+
+    kin = PlayerKinematics(tid, analyzer.kin_config)
+    for i in range(pasos):
+        kin.update(Sample(frame=i, t=t0 + i * 0.2, x=x0 + i * dx, y=100.0))
+    analyzer.tracks[tid] = {"name": f"#{tid}", "team": "unknown", "kinematics": kin}
+    return kin
+
+
+def test_la_fusion_reduce_las_identidades_del_mismo_jugador():
+    """El defecto medido: 51 identidades para ~22 jugadores."""
+    analyzer = FootballAnalyzer()
+    for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0), (11.0, 220.0)], start=1):
+        _track_recto(analyzer, tid, t0, x0)
+
+    resumen = analyzer.merge_tracklets()
+
+    assert resumen["identities_before"] == 3
+    assert resumen["identities_after"] == 1
+    assert list(analyzer.tracks) == [1]
+
+
+def test_la_fusion_no_inventa_la_distancia_del_hueco():
+    """Es la trampa entera de coser tracklets, y no la delata ningún filtro.
+
+    Entre el final de un trozo y el principio del siguiente hay 14 px, o sea
+    1,75 m a la escala por defecto. En medio segundo son 12,6 km/h: muy por
+    debajo del filtro de saltos imposibles, así que si se contaran se colarían
+    sin ningún aviso. La distancia del jugador fusionado tiene que ser
+    exactamente la suma de lo que se observó, ni un metro más.
+    """
+    analyzer = FootballAnalyzer()
+    kins = [
+        _track_recto(analyzer, tid, t0, x0)
+        for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0), (11.0, 220.0)], start=1)
+    ]
+    observado = sum(k.total_distance_m for k in kins)
+
+    analyzer.merge_tracklets()
+
+    assert analyzer.tracks[1]["kinematics"].total_distance_m == pytest.approx(observado)
+
+
+def test_la_fusion_conserva_las_muestras_en_orden():
+    """Sin orden, la estela se dibuja en zigzag y `update` dejaría de valer."""
+    analyzer = FootballAnalyzer()
+    for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0)], start=1):
+        _track_recto(analyzer, tid, t0, x0)
+
+    analyzer.merge_tracklets()
+
+    muestras = analyzer.tracks[1]["kinematics"].samples
+    assert [s.t for s in muestras] == sorted(s.t for s in muestras)
+
+
+def test_dos_jugadores_de_verdad_no_se_fusionan():
+    """Fusionar de más es peor que no fusionar: inventa un jugador."""
+    analyzer = FootballAnalyzer()
+    _track_recto(analyzer, 1, 0.0, 0.0)
+    _track_recto(analyzer, 2, 0.0, 900.0)      # a la vez y lejos
+
+    resumen = analyzer.merge_tracklets()
+
+    assert resumen["identities_after"] == 2
+    assert sorted(analyzer.tracks) == [1, 2]
+
+
+def test_la_fusion_declara_en_que_unidades_trabajo():
+    """En píxeles el radio significa otra cosa, y hay que poder saberlo."""
+    analyzer = FootballAnalyzer()
+    _track_recto(analyzer, 1, 0.0, 0.0)
+    assert analyzer.merge_tracklets()["units"] == "px"
+
+
+def test_fusionar_sin_tracks_no_revienta():
+    analyzer = FootballAnalyzer()
+    resumen = analyzer.merge_tracklets()
+    assert resumen["identities_before"] == 0
+    assert resumen["identities_after"] == 0
+
+
+def test_el_equipo_conocido_sobrevive_a_la_fusion():
+    """Si un trozo sabe de qué equipo es y el otro no, no se pierde el dato."""
+    analyzer = FootballAnalyzer()
+    _track_recto(analyzer, 1, 0.0, 0.0)
+    _track_recto(analyzer, 2, 5.5, 110.0)
+    analyzer.tracks[2]["team"] = "team_1"
+
+    analyzer.merge_tracklets()
+
+    assert analyzer.tracks[1]["team"] == "team_1"
+
+
+def test_la_fusion_converge_si_se_repite():
+    """Una segunda pasada trabaja sobre el resultado de la primera y no cambia nada."""
+    analyzer = FootballAnalyzer()
+    for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0), (11.0, 220.0)], start=1):
+        _track_recto(analyzer, tid, t0, x0)
+
+    primera = analyzer.merge_tracklets()
+    distancia = analyzer.tracks[1]["kinematics"].total_distance_m
+    segunda = analyzer.merge_tracklets()
+
+    assert segunda["identities_after"] == primera["identities_after"]
+    assert analyzer.tracks[1]["kinematics"].total_distance_m == pytest.approx(distancia)

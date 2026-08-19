@@ -462,6 +462,45 @@ class ExternalLoad:
             "dropoff": self.dropoff(),
         }
 
+    # ── Fusión ─────────────────────────────────────────────────────────
+    def absorb(self, other: "ExternalLoad") -> None:
+        """Suma la carga de *other* a la propia, al coser dos tracklets.
+
+        **No se calcula ningún tramo entre las dos.** Ésa es la trampa entera de
+        fusionar tracklets: tomar la última posición de uno y la primera del
+        otro como un tramo recorrido añade metros que nadie observó, y un hueco
+        de 2 s con 15 m de separación son 27 km/h, por debajo del filtro de
+        saltos imposibles. Se colarían sin que nada los delatara. Aquí sólo se
+        suman acumuladores ya calculados, así que el hueco no aporta nada — que
+        es exactamente lo correcto: no se vio.
+        """
+        for nombre, valor in other.band_distance_m.items():
+            self.band_distance_m[nombre] = self.band_distance_m.get(nombre, 0.0) + valor
+        self.high_intensity_m += other.high_intensity_m
+        self.sprint_distance_m += other.sprint_distance_m
+        self.accelerations += other.accelerations
+        self.decelerations += other.decelerations
+        self.sprint_count += other.sprint_count
+        self.max_accel_ms2 = max(self.max_accel_ms2, other.max_accel_ms2)
+        self.max_decel_ms2 = min(self.max_decel_ms2, other.max_decel_ms2)
+        self.peak_speed_kmh = max(self.peak_speed_kmh, other.peak_speed_kmh)
+        self.efforts = (self.efforts + other.efforts)[: self.MAX_EFFORTS]
+        for indice, bucket in other.buckets.items():
+            mio = self.buckets.get(indice)
+            if mio is None:
+                if len(self.buckets) >= self.MAX_BUCKETS:
+                    continue
+                self.buckets[indice] = _Bucket(
+                    bucket.distance_m, bucket.high_intensity_m, bucket.sprint_m, bucket.seconds
+                )
+                continue
+            mio.distance_m += bucket.distance_m
+            mio.high_intensity_m += bucket.high_intensity_m
+            mio.sprint_m += bucket.sprint_m
+            mio.seconds += bucket.seconds
+        self._first_t = _menor(self._first_t, other._first_t)
+        self._last_t = _mayor(self._last_t, other._last_t)
+
     # ── Serialización ──────────────────────────────────────────────────
     def to_state(self) -> Dict[str, object]:
         return {
@@ -556,3 +595,20 @@ class SquadLoad:
             "decelerations": self.decelerations,
             "bands_m": {k: round(v, 1) for k, v in self.bands_m.items()},
         }
+
+
+def _menor(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    """Mínimo tratando ``None`` como «no consta», no como cero."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return min(a, b)
+
+
+def _mayor(a: Optional[float], b: Optional[float]) -> Optional[float]:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)

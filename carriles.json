@@ -83,11 +83,13 @@
       "rutas": [
         "fcopilot/detection.py",
         "fcopilot/tracking.py",
+        "fcopilot/tracklets.py",
         "fcopilot/teams.py",
         "fcopilot/osnet.py",
         "fcopilot/analyzer.py",
         "tests/test_detection.py",
         "tests/test_tracking.py",
+        "tests/test_tracklets.py",
         "tests/test_teams.py",
         "tests/test_analyzer.py",
         "tests/test_osnet.py",

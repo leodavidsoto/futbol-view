@@ -256,6 +256,16 @@ class PlayerKinematics:
         return round(self.total_distance_m / self.active_seconds * 3.6, 2)
 
     @property
+    def first_t(self) -> Optional[float]:
+        """Instante de la primera muestra, o ``None`` si no hubo ninguna."""
+        return self._first_t
+
+    @property
+    def last_t(self) -> Optional[float]:
+        """Instante de la última muestra."""
+        return self._last_t
+
+    @property
     def observed_seconds(self) -> float:
         if self._first_t is None or self._last_t is None:
             return 0.0
@@ -278,6 +288,47 @@ class PlayerKinematics:
             "zones_m": {k: round(v, 1) for k, v in self.zone_distance_m.items()},
             "load": self.load.summary(),
         }
+
+    # ── Fusión de tracklets ────────────────────────────────────────────
+    def absorb(self, other: "PlayerKinematics") -> None:
+        """Incorpora otro tracklet del mismo jugador a este.
+
+        Lo que se suma son acumuladores **ya calculados**; entre el final de uno
+        y el principio del otro no se calcula ningún tramo. Es deliberado y es
+        la parte delicada de fusionar tracklets: inventar ese tramo añadiría
+        metros que nadie observó, y con un hueco de un par de segundos la
+        velocidad implícita queda por debajo del filtro de saltos imposibles, o
+        sea que pasaría sin que nada lo delatara.
+
+        Las muestras se mezclan por tiempo para que la estela y el historial
+        queden en orden. El resultado sigue cumpliendo la monotonía que exige
+        ``update``.
+        """
+        if other is self:
+            return
+        self.samples = sorted(self.samples + other.samples, key=lambda s: s.t)
+        if len(self.samples) > self.config.max_history:
+            del self.samples[: len(self.samples) - self.config.max_history]
+        self.total_distance_m += other.total_distance_m
+        self.active_seconds += other.active_seconds
+        self.sprints += other.sprints
+        self.rejected_steps += other.rejected_steps
+        self.duplicate_samples += other.duplicate_samples
+        self.max_speed_kmh = max(self.max_speed_kmh, other.max_speed_kmh)
+        self.load.absorb(other.load)
+        if other._first_t is not None:
+            self._first_t = other._first_t if self._first_t is None else min(self._first_t, other._first_t)
+        if other._last_t is not None:
+            if self._last_t is None or other._last_t > self._last_t:
+                self._last_t = other._last_t
+                # La velocidad instantánea que vale es la del trozo que termina
+                # más tarde: es la última que se midió de verdad.
+                self.speed_kmh = other.speed_kmh
+        # La siguiente muestra arranca sin velocidad previa: entre los dos
+        # trozos hay un hueco, y derivar una aceleración a través de él sería
+        # inventarla.
+        self._last_step_kmh = None
+        self._sprint_elapsed = 0.0
 
     # ── Serialización (persistencia de sesión) ─────────────────────────
     def to_state(self) -> Dict[str, object]:

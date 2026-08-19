@@ -1,6 +1,6 @@
 # Contrato de PERCEPCION
 
-**Versión:** 1 · **Publicado:** 2026-08-18 · **Estable desde:** 2026-08-18
+**Versión:** 2 · **Publicado:** 2026-08-19 · **Estable desde:** 2026-08-18
 
 Consume el contrato de `NUCLEO` v1. Convierte píxeles en jugadores con identidad
 y equipo, y alimenta los objetos cinemáticos con muestras que llevan tiempo de
@@ -84,6 +84,60 @@ clf.name -> "kmeans" | "grass_kmeans" | "osnet"
 | **Ventana acotada** | Como mucho `vote_window` votos por track |
 | **`unknown` es un valor legítimo** | Antes de tener muestras suficientes, y para un track sin votos |
 
+### Fusión de tracklets — contra la fragmentación
+
+```python
+analyzer.merge_tracklets(config: MergeConfig | None = None) -> dict
+analyzer.last_merge -> dict | None
+merge_tracklets(tracklets: Sequence[Tracklet], config) -> MergeResult   # puro, sin analizador
+```
+
+El tracker produjo **51 identidades para unos 22 jugadores** en el partido real
+que se analizó. Con `frame_skip` alto —obligado en CPU— la asociación se pierde
+cada vez que alguien se cruza por delante, y el jugador aparece como tres
+jugadores que corrieron un tercio cada uno.
+
+`merge_tracklets` es un **post-proceso**, no un tracker: mira trozos ya cerrados
+y decide cuáles son el mismo jugador con tres filtros que hay que pasar todos
+—tiempo, física y apariencia—. Es lo mismo que hace el post-proceso del pipeline
+ganador de SoccerNet Game State Reconstruction.
+
+| Garantía | Detalle |
+|---|---|
+| **No inventa la distancia del hueco** | Al coser dos trozos se suman acumuladores ya calculados; **entre ellos no se calcula ningún tramo**. Un hueco de 2 s con 15 m son 27 km/h, por debajo del filtro de saltos imposibles: se colarían sin aviso. Fijado por `test_la_fusion_no_inventa_la_distancia_del_hueco` |
+| **Dos trozos que coexisten nunca se fusionan** | Nadie está en dos sitios a la vez, por mucho que se parezcan |
+| **Cada trozo tiene como mucho un sucesor** | Si no, dos jugadores distintos se funden en uno |
+| **Gana el eslabón contiguo** | El coste penaliza el hueco. Sin eso, saltarse un trozo salía más barato y la fusión producía 1→3 y 2→4 en vez de 1→2→3→4 |
+| **Determinista** | El resultado no depende del orden de entrada |
+| **El mapa siempre se puede aplicar** | Un track que no se fusiona se mapea a sí mismo |
+
+**Modifica el estado de la sesión**: los tracks absorbidos desaparecen de
+`analyzer.tracks`. Quien guarde referencias a `track_id` antes de llamar tiene
+que releerlas después. Llamarla dos veces converge.
+
+#### Qué NO garantiza
+
+- **El equipo predicho automáticamente no veta una fusión.** La clasificación
+  se midió repartiendo 35/17 cuando debía ser mitad y mitad; dejarla vetar
+  propagaría su error a las identidades. Sólo veta una asignación **manual**.
+- **Sin `torch`, el descriptor de apariencia es el color del kit.** Distingue
+  bien entre equipos y mal entre compañeros: filtra fusiones absurdas, no
+  resuelve las difíciles. Con OSNet disponible, `describe()` devuelve el
+  embedding de 512 dimensiones y el filtro sí discrimina entre compañeros.
+- **No recupera un jugador que estuvo fuera más de `max_gap_s`.** A partir de
+  ahí, cualquier compañero con la misma camiseta encaja igual de bien y
+  fusionar sería inventar.
+
+### `describe` — descriptor de apariencia
+
+```python
+clf.describe(frame, bbox) -> np.ndarray | None
+```
+
+Lo implementan los tres clasificadores. Es el mismo vector que usan para
+clasificar equipo, expuesto aparte porque sirve para otra cosa. `None` significa
+«no se puede describir», no «no se parece a nada».
+
 ### `FootballAnalyzer` — el bucle de frames
 
 ```python
@@ -153,6 +207,17 @@ Forma de la respuesta de `process_frame`:
 | `CLIENTE` | Indirectamente: la forma de `process_frame` es cada línea del stream NDJSON |
 
 ## Cambios desde la versión anterior
+
+### v2 (2026-08-19)
+
+- **Añade:** `analyzer.merge_tracklets()` y el módulo `fcopilot.tracklets`.
+- **Añade:** `describe()` en los tres clasificadores de equipo.
+- **Añade:** el analizador acumula un descriptor medio de apariencia por track
+  (una media incremental, no una lista: la lista crecería sin tope).
+- **Rompe (sólo si se llama a `merge_tracklets`):** los `track_id` absorbidos
+  desaparecen del diccionario de tracks.
+
+### v1 (2026-08-18)
 
 Primera publicación. Respecto del código previo:
 
