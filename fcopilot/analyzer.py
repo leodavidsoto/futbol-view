@@ -372,7 +372,13 @@ class FootballAnalyzer:
         if key in self.player_names:
             track["name"] = self.player_names[key]
 
-        world = self.pixel_to_world(cx, cy)
+        # Se proyectan los PIES, no el centro de la caja. La homografía mapea el
+        # plano del suelo, y el único punto del jugador que está sobre ese plano
+        # es donde pisa: proyectar el torso —a ~0,9 m de altura— lo sitúa varios
+        # metros más lejos de la cámara, y el error crece con la distancia.
+        # Afectaba a todo lo que se calcula en metros: posiciones, distancias,
+        # velocidades, el mini-mapa y la adjudicación de posesión.
+        world = self.pixel_to_world(cx, y2)
         kin: PlayerKinematics = track["kinematics"]
         kin.update(
             Sample(

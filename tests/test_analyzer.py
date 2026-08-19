@@ -365,3 +365,38 @@ def test_un_cruce_no_reasigna_equipos(analyzer, fake_yolo, green_frame):
         equipos = {p["track_id"]: p["team"] for p in frame["players"]}
         assert equipos.get(ids[0]) in (None, "team_1")
         assert equipos.get(ids[1]) in (None, "team_2")
+
+
+# ── La homografía mapea el suelo, así que se proyectan los pies ──────────
+def test_la_posicion_de_campo_sale_de_los_pies_no_del_torso(analyzer, fake_yolo, green_frame):
+    """El único punto del jugador que está sobre el plano del suelo es donde pisa.
+
+    Proyectar el centro de la caja —el torso, a ~0,9 m de altura— sitúa al
+    jugador varios metros más lejos de la cámara, y el error crece con la
+    distancia. Afecta a todo lo que se calcula en metros.
+    """
+    analyzer.set_homography(IMAGEN, CAMPO)
+    caja = (400.0, 200.0, 440.0, 320.0)          # 40x120 px: alto de un jugador
+    fake_yolo.set_script([[(caja, 0.9, 0)]] * 3)
+    salida = correr(analyzer, fake_yolo, [[(caja, 0.9, 0)]], frames=3, dt=0.1)
+    jugador = salida[-1]["players"][0]
+
+    pies = analyzer.pixel_to_world(420.0, 320.0)
+    torso = analyzer.pixel_to_world(420.0, 260.0)
+    assert jugador["world_pos"] == pytest.approx(list(pies), abs=0.01)
+    assert jugador["world_pos"] != pytest.approx(list(torso), abs=0.01)
+
+
+def test_dos_jugadores_juntos_estan_juntos_en_el_campo(analyzer, fake_yolo, green_frame):
+    """Con los pies, dos jugadores lado a lado quedan a metros de distancia
+    razonable; con el torso, el de la caja más alta se iba lejos."""
+    analyzer.set_homography(IMAGEN, CAMPO)
+    guion = [[
+        ((400.0, 200.0, 440.0, 320.0), 0.9, 0),   # cerca
+        ((460.0, 230.0, 495.0, 320.0), 0.9, 0),   # al lado, caja más corta
+    ]]
+    salida = correr(analyzer, fake_yolo, guion, frames=3, dt=0.1)
+    posiciones = [p["world_pos"] for p in salida[-1]["players"] if p["world_pos"]]
+    assert len(posiciones) == 2
+    separacion = ((posiciones[0][0] - posiciones[1][0]) ** 2 + (posiciones[0][1] - posiciones[1][1]) ** 2) ** 0.5
+    assert separacion < 15.0, f"quedan a {separacion:.1f} m estando pegados en la imagen"
