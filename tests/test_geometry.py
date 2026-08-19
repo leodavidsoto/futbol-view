@@ -157,3 +157,49 @@ def test_el_mensaje_de_zona_degenerada_dice_qué_mirar():
     with pytest.raises(PlayAreaError) as exc:
         validate_play_area([(0, 0), (1, 1), (2, 2)])
     assert "alineados" in str(exc.value)
+
+
+# ── Cuadriláteros: el orden de los clics no puede invalidar la calibración ──
+def test_las_cuatro_esquinas_en_zigzag_no_son_degeneradas():
+    """Cuatro esquinas válidas señaladas en orden Z se rechazaban.
+
+    `quad_is_degenerate` medía el área del polígono, que depende del orden: el
+    polígono cruzado que forman arriba-izquierda, arriba-derecha,
+    abajo-izquierda, abajo-derecha tiene área **exactamente cero** por la
+    fórmula del cordón. El usuario recibía «los puntos son colineales» sobre
+    cuatro puntos que no lo eran, y la única salida era volver a hacer clic en
+    otro orden sin saber por qué.
+    """
+    zigzag = [(105.0, 68.0), (105.0, 0.0), (0.0, 68.0), (0.0, 0.0)]
+    assert not quad_is_degenerate(zigzag)
+    assert polygon_area(zigzag) == 0.0      # el motivo del fallo, aún presente
+
+
+def test_la_calibracion_da_el_mismo_resultado_en_cualquier_orden_de_clic():
+    """Una homografía no depende de en qué orden se señalaron sus puntos."""
+    imagen = [(100.0, 100.0), (500.0, 120.0), (520.0, 400.0), (80.0, 380.0)]
+    mundo = [(0.0, 0.0), (105.0, 0.0), (105.0, 68.0), (0.0, 68.0)]
+    orden = [0, 2, 1, 3]
+
+    directa = find_homography(imagen, mundo)
+    barajada = find_homography([imagen[i] for i in orden], [mundo[i] for i in orden])
+
+    for px, py in imagen:
+        a = perspective_transform_point(directa, px, py)
+        b = perspective_transform_point(barajada, px, py)
+        assert a is not None and b is not None
+        assert a[0] == pytest.approx(b[0], abs=1e-6)
+        assert a[1] == pytest.approx(b[1], abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    "puntos",
+    [
+        [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (30.0, 0.0)],        # los 4 alineados
+        [(0.0, 0.0), (10.0, 0.0), (20.0, 0.0), (5.0, 40.0)],        # 3 alineados
+        [(0.0, 0.0), (10.0, 0.0), (10.0, 0.0), (0.0, 10.0)],        # repetido
+        [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)],           # minúsculo
+    ],
+)
+def test_lo_que_si_es_degenerado_se_sigue_rechazando(puntos):
+    assert quad_is_degenerate(puntos)

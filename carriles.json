@@ -56,11 +56,13 @@
         "fcopilot/possession.py",
         "fcopilot/report.py",
         "fcopilot/geometry.py",
+        "fcopilot/pitch.py",
         "tests/test_kinematics.py",
         "tests/test_load.py",
         "tests/test_possession.py",
         "tests/test_report.py",
         "tests/test_geometry.py",
+        "tests/test_pitch.py",
         "worklog/NUCLEO/**"
       ]
     },

@@ -42,8 +42,27 @@ def polygon_area(points: Sequence[Point]) -> float:
     return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
 
 
+def _triangle_area(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Área del triángulo abc. Cero exacto significa que los tres están alineados."""
+    return float(abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.0)
+
+
 def quad_is_degenerate(points: Sequence[Point], min_area: float = MIN_QUAD_AREA) -> bool:
-    """``True`` si el cuadrilátero es demasiado pequeño o tiene puntos repetidos."""
+    """``True`` si los cuatro puntos no pueden definir una homografía.
+
+    La condición real es **que no haya tres puntos alineados**, y eso no depende
+    del orden en que se den. Esta función usaba el área del polígono, que sí
+    depende del orden: cuatro esquinas perfectamente válidas señaladas en
+    zigzag —arriba-izquierda, arriba-derecha, abajo-izquierda, abajo-derecha,
+    que es un orden completamente natural al hacer clic— forman un polígono
+    cruzado cuya área por la fórmula del cordón sale **exactamente cero**, y la
+    calibración se rechazaba con un mensaje que hablaba de puntos colineales
+    cuando no lo eran.
+
+    Se comprueban por eso los cuatro triángulos que forman los puntos de tres en
+    tres. El umbral por triángulo es la mitad del de área porque un
+    cuadrilátero se descompone en dos triángulos.
+    """
     pts = np.asarray(points, dtype=np.float64)
     if pts.shape[0] < 4:
         return True
@@ -51,7 +70,13 @@ def quad_is_degenerate(points: Sequence[Point], min_area: float = MIN_QUAD_AREA)
         for j in range(i + 1, len(pts)):
             if np.allclose(pts[i], pts[j]):
                 return True
-    return polygon_area(pts) < min_area
+    minimo_triangulo = min_area / 2.0
+    for i in range(4):
+        for j in range(i + 1, 4):
+            for k in range(j + 1, 4):
+                if _triangle_area(pts[i], pts[j], pts[k]) < minimo_triangulo:
+                    return True
+    return False
 
 
 def _normalize(points: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
