@@ -22,7 +22,12 @@ import numpy as np
 
 from fcopilot.config import default_runtime_config, merge_config
 from fcopilot.detection import Detector
-from fcopilot.geometry import find_homography, perspective_transform_point
+from fcopilot.geometry import (
+    find_homography,
+    perspective_transform_point,
+    point_in_polygon,
+    validate_play_area,
+)
 from fcopilot.kinematics import (
     TIME_SOURCE_CLOCK,
     TIME_SOURCE_VIDEO,
@@ -125,6 +130,11 @@ class FootballAnalyzer:
         #: llamada a `process_frame` y no puede cambiar: mezclar tiempo de vídeo
         #: con reloj de pared produce métricas que parecen correctas y no lo son.
         self.time_source: Optional[str] = None
+        #: Polígono que delimita dónde puede haber jugadores. Sin él, todo vale.
+        self.play_area: Optional[List[Tuple[float, float]]] = None
+        #: Detecciones descartadas por caer fuera. Es diagnóstico: si crece
+        #: mucho, o la zona está mal puesta o el detector está viendo cosas.
+        self.discarded_outside = 0
         self.elapsed_s = 0.0
 
         self.active_session: Optional[str] = None
@@ -199,6 +209,48 @@ class FootballAnalyzer:
         else:
             self.tracker = SimpleCentroidTracker(distance_threshold=dist, max_missing=hit_max, min_hits=2)
             self.ball_tracker = SimpleCentroidTracker(distance_threshold=dist * 2, max_missing=hit_max + 10, min_hits=1)
+
+    def _filter_play_area(self, person_xyxy, person_conf, ball_candidates):
+        """Descarta lo detectado fuera de la zona de juego.
+
+        Se filtra **antes** del tracker a propósito: un track nacido de un árbol
+        o de un coche aparcado ya contamina distancias, equipos y posesión, y
+        ninguna corrección posterior lo deshace.
+
+        El punto de referencia de un jugador son sus pies —el borde inferior de
+        la caja—, que es donde pisa y lo que decide si está en el campo. Para el
+        balón se usa su centro.
+        """
+        if not self.play_area:
+            return person_xyxy, person_conf, ball_candidates
+
+        xyxy_ok, conf_ok = [], []
+        for caja, conf in zip(person_xyxy, person_conf):
+            pies = ((float(caja[0]) + float(caja[2])) / 2, float(caja[3]))
+            if point_in_polygon(pies, self.play_area):
+                xyxy_ok.append(caja)
+                conf_ok.append(conf)
+            else:
+                self.discarded_outside += 1
+
+        balones_ok = []
+        for caja, conf in ball_candidates:
+            centro = ((float(caja[0]) + float(caja[2])) / 2, (float(caja[1]) + float(caja[3])) / 2)
+            if point_in_polygon(centro, self.play_area):
+                balones_ok.append((caja, conf))
+            else:
+                self.discarded_outside += 1
+
+        return xyxy_ok, conf_ok, balones_ok
+
+    def set_play_area(self, points) -> None:
+        """Define la zona de juego. Lanza ``PlayAreaError`` si es degenerada."""
+        with self.state_lock:
+            self.play_area = validate_play_area(points)
+
+    def clear_play_area(self) -> None:
+        with self.state_lock:
+            self.play_area = None
 
     def _track_players(self, person_xyxy, person_conf) -> List[Tuple[int, float, float, float, float]]:
         if self.tracker_type == "norfair":
@@ -302,6 +354,9 @@ class FootballAnalyzer:
 
             detect_start = time.perf_counter()
             person_xyxy, person_conf, ball_candidates = self.detector.predict(frame)
+            person_xyxy, person_conf, ball_candidates = self._filter_play_area(
+                person_xyxy, person_conf, ball_candidates
+            )
             detect_ms = (time.perf_counter() - detect_start) * 1000
 
             track_start = time.perf_counter()
@@ -337,6 +392,10 @@ class FootballAnalyzer:
                     "calibrated": self.is_calibrated,
                     "elapsed_s": round(t, 2),
                     "time_source": self.time_source,
+                "play_area": self.play_area,
+                "discarded_outside": self.discarded_outside,
+                    "play_area": bool(self.play_area),
+                    "discarded_outside": self.discarded_outside,
                 },
                 "timings_ms": {
                     "detect": round(detect_ms, 2),
@@ -536,6 +595,7 @@ class FootballAnalyzer:
         self._last_t = None
         self._t_origin = None
         self.time_source = None
+        self.discarded_outside = 0
         self.elapsed_s = 0.0
 
     def soft_reset(self) -> None:
@@ -660,6 +720,8 @@ class FootballAnalyzer:
                 "elapsed_s": self.elapsed_s,
                 "last_t": self._last_t,
                 "time_source": self.time_source,
+                "play_area": self.play_area,
+                "discarded_outside": self.discarded_outside,
                 "created_at": self.created_at,
                 "last_accessed_at": self.last_accessed_at,
                 "metrics": self.metrics,
@@ -695,6 +757,9 @@ class FootballAnalyzer:
             self._last_t = data.get("last_t")
             self._t_origin = 0.0 if self._last_t is not None else None
             self.time_source = data.get("time_source")
+            zona = data.get("play_area")
+            self.play_area = [tuple(p) for p in zona] if zona else None
+            self.discarded_outside = int(data.get("discarded_outside", 0))
             self.created_at = float(data.get("created_at", time.time()))
             self.last_accessed_at = float(data.get("last_accessed_at", time.time()))
             self.metrics = {**self._empty_metrics(), **(data.get("metrics") or {})}

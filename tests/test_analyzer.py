@@ -400,3 +400,81 @@ def test_dos_jugadores_juntos_estan_juntos_en_el_campo(analyzer, fake_yolo, gree
     assert len(posiciones) == 2
     separacion = ((posiciones[0][0] - posiciones[1][0]) ** 2 + (posiciones[0][1] - posiciones[1][1]) ** 2) ** 0.5
     assert separacion < 15.0, f"quedan a {separacion:.1f} m estando pegados en la imagen"
+
+
+# ── Zona de juego ───────────────────────────────────────────────────────
+#
+# Sale de un caso real: en un partido nocturno, la mitad de las detecciones
+# caían sobre árboles, coches aparcados y el banquillo, y el "balón" era una
+# mancha blanca sobre una línea, fuera de donde jugaba nadie.
+
+from fcopilot.geometry import PlayAreaError
+
+CAMPO_IMG = [(100.0, 100.0), (750.0, 100.0), (800.0, 400.0), (50.0, 400.0)]
+
+
+def _en(x, y):
+    """Caja de jugador cuyos PIES caen en (x, y)."""
+    return ((x - 12.0, y - 60.0, x + 12.0, y), 0.9, 0)
+
+
+def test_lo_de_fuera_no_llega_a_crear_un_track(analyzer, fake_yolo, green_frame):
+    analyzer.set_play_area(CAMPO_IMG)
+    guion = [[_en(400, 300), _en(400, 460), _en(20, 300)]]      # uno dentro, dos fuera
+    salida = correr(analyzer, fake_yolo, guion, frames=4, dt=0.1)
+    assert len(salida[-1]["players"]) == 1
+    assert analyzer.discarded_outside > 0
+
+
+def test_sin_zona_definida_no_se_descarta_nada(analyzer, fake_yolo, green_frame):
+    guion = [[_en(400, 300), _en(400, 460), _en(20, 300)]]
+    salida = correr(analyzer, fake_yolo, guion, frames=4, dt=0.1)
+    assert len(salida[-1]["players"]) == 3
+    assert analyzer.discarded_outside == 0
+
+
+def test_el_filtro_mira_los_pies_no_el_centro_de_la_caja(analyzer, fake_yolo, green_frame):
+    """Un jugador alto junto a la línea de fondo tiene el torso fuera del campo
+    y los pies dentro: es lo que decide si está en juego."""
+    analyzer.set_play_area(CAMPO_IMG)
+    alto = ((388.0, 60.0, 412.0, 180.0), 0.9, 0)     # pies en y=180 (dentro), centro en y=120
+    salida = correr(analyzer, fake_yolo, [[alto]], frames=4, dt=0.1)
+    assert len(salida[-1]["players"]) == 1
+    assert analyzer.discarded_outside == 0
+
+
+def test_un_balon_fuera_del_campo_se_descarta(analyzer, fake_yolo, green_frame):
+    analyzer.set_play_area(CAMPO_IMG)
+    guion = [[_en(400, 300), ball_box(20, 300)]]     # el balón, fuera por la izquierda
+    salida = correr(analyzer, fake_yolo, guion, frames=4, dt=0.1)
+    assert salida[-1]["ball"] is None
+
+
+def test_el_contador_de_descartes_viaja_en_el_frame(analyzer, fake_yolo, green_frame):
+    analyzer.set_play_area(CAMPO_IMG)
+    salida = correr(analyzer, fake_yolo, [[_en(20, 300)]], frames=3, dt=0.1)
+    stats = salida[-1]["stats"]
+    assert stats["play_area"] is True
+    assert stats["discarded_outside"] >= 3
+
+
+def test_quitar_la_zona_devuelve_todo(analyzer, fake_yolo, green_frame):
+    analyzer.set_play_area(CAMPO_IMG)
+    correr(analyzer, fake_yolo, [[_en(20, 300)]], frames=2, dt=0.1)
+    analyzer.clear_play_area()
+    salida = correr(analyzer, fake_yolo, [[_en(20, 300)]], frames=4, dt=0.1)
+    assert len(salida[-1]["players"]) == 1
+
+
+def test_una_zona_degenerada_se_rechaza(analyzer):
+    with pytest.raises(PlayAreaError):
+        analyzer.set_play_area([(0, 0), (1, 1), (2, 2), (3, 3)])
+
+
+def test_la_zona_sobrevive_a_la_serializacion(analyzer, fake_yolo, green_frame):
+    analyzer.set_play_area(CAMPO_IMG)
+    correr(analyzer, fake_yolo, [[_en(20, 300)]], frames=2, dt=0.1)
+    revivido = FootballAnalyzer({"tracker_type": "simple", "detection_mode": "normal"})
+    revivido.load_state(analyzer.serialize_state())
+    assert revivido.play_area == CAMPO_IMG
+    assert revivido.discarded_outside == analyzer.discarded_outside

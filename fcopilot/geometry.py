@@ -22,12 +22,12 @@ class CalibrationError(ValueError):
     """Los puntos de calibración no permiten calcular una homografía."""
 
 
-def _as_points(points: Iterable[Point], name: str) -> np.ndarray:
+def _as_points(points: Iterable[Point], name: str, minimo: int = 4) -> np.ndarray:
     arr = np.asarray(list(points), dtype=np.float64)
     if arr.ndim != 2 or arr.shape[1] != 2:
         raise CalibrationError(f"{name}: cada punto debe tener 2 coordenadas")
-    if arr.shape[0] < 4:
-        raise CalibrationError(f"{name}: se requieren al menos 4 puntos")
+    if arr.shape[0] < minimo:
+        raise CalibrationError(f"{name}: se requieren al menos {minimo} puntos")
     if not np.isfinite(arr).all():
         raise CalibrationError(f"{name}: contiene valores no finitos")
     return arr
@@ -119,3 +119,62 @@ def perspective_transform_point(homography: Optional[np.ndarray], px: float, py:
 def euclidean(a: Sequence[float], b: Sequence[float]) -> float:
     """Distancia euclídea entre dos puntos 2D."""
     return float(np.hypot(a[0] - b[0], a[1] - b[1]))
+
+
+# ── Zona de juego ───────────────────────────────────────────────────────
+#
+# Un polígono que delimita dónde puede haber jugadores. Todo lo que el detector
+# encuentre fuera se descarta antes de llegar al tracker, que es donde importa:
+# un track nacido de un árbol o de un coche aparcado contamina las métricas del
+# partido, y ninguna corrección posterior lo arregla.
+
+#: Mínimo de vértices y área para que un polígono delimite algo.
+MIN_ZONA_VERTICES = 3
+MIN_ZONA_AREA = 100.0
+
+
+class PlayAreaError(ValueError):
+    """Polígono de zona de juego inservible."""
+
+
+def validate_play_area(points: Sequence[Point]) -> List[Tuple[float, float]]:
+    """Comprueba y normaliza el polígono de la zona de juego."""
+    try:
+        arr = _as_points(points, "zona de juego", minimo=MIN_ZONA_VERTICES)
+    except CalibrationError as exc:
+        raise PlayAreaError(str(exc)) from exc
+    if len(arr) < MIN_ZONA_VERTICES:
+        raise PlayAreaError(f"la zona de juego necesita al menos {MIN_ZONA_VERTICES} vertices")
+    area = polygon_area(arr)
+    if area < MIN_ZONA_AREA:
+        raise PlayAreaError(
+            f"la zona de juego es degenerada (area {area:.1f} < {MIN_ZONA_AREA}): "
+            "revisa que los vertices no esten alineados ni repetidos"
+        )
+    return [(float(x), float(y)) for x, y in arr]
+
+
+def point_in_polygon(point: Sequence[float], polygon: Sequence[Point]) -> bool:
+    """¿Está el punto dentro del polígono? (lanzamiento de rayo).
+
+    Los vértices y las aristas cuentan como dentro: un jugador justo sobre la
+    línea de banda está en juego, y dejarlo fuera por un píxel sería peor que
+    el falso positivo que esto viene a evitar.
+    """
+    if polygon is None or len(polygon) < MIN_ZONA_VERTICES:
+        return True                      # sin zona definida, todo vale
+    x, y = float(point[0]), float(point[1])
+    dentro = False
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = float(polygon[i][0]), float(polygon[i][1])
+        x2, y2 = float(polygon[(i + 1) % n][0]), float(polygon[(i + 1) % n][1])
+        # Sobre la arista: dentro por definición.
+        if min(x1, x2) - 1e-9 <= x <= max(x1, x2) + 1e-9 and min(y1, y2) - 1e-9 <= y <= max(y1, y2) + 1e-9:
+            if abs((x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)) < 1e-6:
+                return True
+        if (y1 > y) != (y2 > y):
+            corte = (x2 - x1) * (y - y1) / (y2 - y1) + x1
+            if x < corte:
+                dentro = not dentro
+    return dentro

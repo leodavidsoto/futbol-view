@@ -51,7 +51,7 @@ from fcopilot import __version__ as FCOPILOT_VERSION
 from fcopilot.analyzer import BYTETRACK_AVAILABLE, NORFAIR_AVAILABLE, FootballAnalyzer
 from fcopilot.config import ALLOWED_MANUAL_TEAMS, ConfigError, DEFAULTS, validate_config
 from fcopilot.detection import SAHI_AVAILABLE, YOLO_AVAILABLE, DetectorUnavailable, shared_yolo_registry
-from fcopilot.geometry import CalibrationError
+from fcopilot.geometry import CalibrationError, PlayAreaError
 from fcopilot.osnet import TORCH_AVAILABLE, osnet_weights_available, shared_osnet_registry
 from fcopilot.sessions import SessionIdError, SessionLimitError, SessionManager, normalize_session_id
 
@@ -115,6 +115,13 @@ class CalibrationRequest(BaseModel):
     pixels_per_meter: Optional[float] = Field(default=None, gt=0, le=1000)
     img_points: Optional[List[List[float]]] = None
     world_points: Optional[List[List[float]]] = None
+
+
+class PlayAreaRequest(BaseModel):
+    """Polígono que delimita dónde puede haber jugadores."""
+
+    model_config = ConfigDict(extra="ignore")
+    points: List[List[float]] = Field(min_length=3)
 
 
 class ConfigRequest(BaseModel):
@@ -447,6 +454,38 @@ def clear_calibration(session_id: str = Depends(get_session_id)):
 # ─────────────────────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────────────────────
+@app.post("/api/play-area")
+def set_play_area(data: PlayAreaRequest, session_id: str = Depends(get_session_id)):
+    """Define la zona de juego: lo detectado fuera se descarta antes de trackear."""
+    analyzer = get_analyzer(session_id)
+    if any(len(p) != 2 for p in data.points):
+        raise _http(400, "Cada vertice debe tener 2 coordenadas")
+    try:
+        analyzer.set_play_area(data.points)
+    except PlayAreaError as exc:
+        raise _http(400, str(exc)) from exc
+    save_session(session_id, analyzer)
+    return {"ok": True, "vertices": len(analyzer.play_area)}
+
+
+@app.get("/api/play-area")
+def get_play_area(session_id: str = Depends(get_session_id)):
+    analyzer = get_analyzer(session_id)
+    return {
+        "defined": bool(analyzer.play_area),
+        "points": [list(p) for p in analyzer.play_area] if analyzer.play_area else None,
+        "discarded_outside": analyzer.discarded_outside,
+    }
+
+
+@app.delete("/api/play-area")
+def clear_play_area(session_id: str = Depends(get_session_id)):
+    analyzer = get_analyzer(session_id)
+    analyzer.clear_play_area()
+    save_session(session_id, analyzer)
+    return {"ok": True, "defined": False}
+
+
 @app.get("/api/config")
 def get_config(session_id: str = Depends(get_session_id)):
     analyzer = get_analyzer(session_id)

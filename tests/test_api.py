@@ -537,3 +537,51 @@ def test_toda_clave_no_expuesta_tiene_su_motivo_escrito():
     for clave, motivo in CLAVES_NO_EXPUESTAS.items():
         assert clave in DEFAULTS, f"{clave} ya no existe: quítala de la lista"
         assert len(motivo) > 40, f"{clave}: el motivo tiene que explicar, no etiquetar"
+
+
+# ── Zona de juego ───────────────────────────────────────────────────────
+CAMPO_TRAPECIO = [[400, 200], [1500, 200], [1700, 600], [200, 600]]
+
+
+def test_definir_la_zona_de_juego(client):
+    r = client.post("/api/play-area", json={"points": CAMPO_TRAPECIO})
+    assert r.status_code == 200 and r.json()["vertices"] == 4
+    zona = client.get("/api/play-area").json()
+    assert zona["defined"] is True and len(zona["points"]) == 4
+
+
+def test_sin_definirla_no_hay_zona(client):
+    assert client.get("/api/play-area").json()["defined"] is False
+
+
+def test_borrar_la_zona(client):
+    client.post("/api/play-area", json={"points": CAMPO_TRAPECIO})
+    assert client.delete("/api/play-area").json()["defined"] is False
+    assert client.get("/api/play-area").json()["defined"] is False
+
+
+def test_un_triangulo_vale_como_zona(client):
+    r = client.post("/api/play-area", json={"points": [[0, 0], [500, 0], [250, 400]]})
+    assert r.status_code == 200
+
+
+def test_dos_vertices_no_delimitan_nada(client):
+    assert client.post("/api/play-area", json={"points": [[0, 0], [100, 100]]}).status_code == 422
+
+
+def test_una_zona_degenerada_es_400_con_el_motivo(client):
+    r = client.post("/api/play-area", json={"points": [[0, 0], [1, 1], [2, 2], [3, 3]]})
+    assert r.status_code == 400
+    assert "degenerada" in r.json()["detail"]
+
+
+def test_un_vertice_mal_formado_es_400(client):
+    r = client.post("/api/play-area", json={"points": [[0, 0], [1, 1, 1], [2, 2]]})
+    assert r.status_code == 400
+
+
+def test_la_zona_es_por_sesion(client):
+    """Como todo lo demás: el campo de un partido no es el de otro."""
+    client.post("/api/play-area", json={"points": CAMPO_TRAPECIO}, headers={"x-session-id": "partido-a"})
+    ajena = client.get("/api/play-area", headers={"x-session-id": "partido-b"}).json()
+    assert ajena["defined"] is False

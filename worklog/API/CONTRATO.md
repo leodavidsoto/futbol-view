@@ -41,6 +41,7 @@ que su autor se acuerde. La comparación es en tiempo constante.
 | `POST` | `/api/player-name` | `{track_id, name}` | `{ok: true}` |
 | `POST` | `/api/player-team` | `{track_id, team}` | `{ok: true}` |
 | `GET`/`POST`/`DELETE` | `/api/calibrate` | 4 puntos imagen + 4 mundo | homografía activa |
+| `GET`/`POST`/`DELETE` | `/api/play-area` | polígono de ≥3 vértices | zona de juego activa |
 | `GET` | `/api/report` | — | informe de `build_report` |
 | `GET` | `/api/export` | `include_positions?` | informe, con posiciones crudas |
 | `POST` | `/api/reset` | `soft?` | estado reiniciado |
@@ -92,6 +93,8 @@ para cualquier fallo inesperado de decodificación.
 | `session_id` con formato inválido | 400 | Corregir el identificador; no reintentar igual |
 | Configuración fuera de rango o clave desconocida | 400 | Mostrar el mensaje: dice la clave y el rango |
 | Calibración degenerada (4 puntos colineales) | 400 | Pedir cuatro puntos que formen un cuadrilátero |
+| Zona de juego con menos de 3 vértices | 422 | Es el esquema: un polígono necesita tres puntos |
+| Zona de juego degenerada (vértices alineados) | 400 | El mensaje lo dice; encerraría área cero y filtraría todo |
 | Modelo fuera de `MODEL_ROOT`, inexistente o que no es `.pt` | 400 | No reintentar: es una ruta prohibida a propósito |
 | Credencial ausente o inválida (con `API_KEY`) | 401 | Pedir la credencial; no reintentar sin ella |
 | Fichero que no es vídeo | 415 | Cambiar de fichero |

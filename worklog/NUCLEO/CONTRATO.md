@@ -120,7 +120,18 @@ etiquetarlas es lo que impide compararlas sin saberlo.
 find_homography(img_points, world_points) -> np.ndarray        # 3×3
 perspective_transform_point(H, x, y) -> (float, float) | None
 quad_is_degenerate(points) -> bool
+validate_play_area(points) -> list[tuple[float, float]]        # >= 3 vértices
+point_in_polygon(point, polygon) -> bool
 ```
+
+`point_in_polygon` cuenta **el borde como dentro**: un jugador sobre la línea de
+banda está en juego, y dejarlo fuera por un píxel sería peor que el falso
+positivo que la zona viene a evitar. Con `polygon` vacío o `None` devuelve
+`True` — sin zona definida, todo vale.
+
+`validate_play_area` lanza `PlayAreaError` con menos de tres vértices o si el
+polígono no encierra área: unos vértices alineados filtrarían absolutamente
+todo.
 
 `find_homography` exige cuatro puntos y lanza `CalibrationError` si el
 cuadrilátero es degenerado. `perspective_transform_point` devuelve `None` si el

@@ -94,3 +94,66 @@ def test_la_homografia_esta_normalizada():
     assert H.shape == (3, 3)
     assert H[2, 2] == pytest.approx(1.0)
     assert np.isfinite(H).all()
+
+
+# ── Zona de juego ───────────────────────────────────────────────────────
+from fcopilot.geometry import PlayAreaError, point_in_polygon, validate_play_area
+
+CUADRO = [(0, 0), (100, 0), (100, 100), (0, 100)]
+#: Un campo visto en perspectiva no es un rectángulo: es un trapecio.
+TRAPECIO = [(400, 200), (1500, 200), (1700, 600), (200, 600)]
+
+
+def test_un_punto_dentro_esta_dentro():
+    assert point_in_polygon((50, 50), CUADRO) is True
+
+
+def test_un_punto_fuera_esta_fuera():
+    assert point_in_polygon((150, 50), CUADRO) is False
+    assert point_in_polygon((50, -10), CUADRO) is False
+
+
+def test_el_borde_cuenta_como_dentro():
+    """Un jugador sobre la línea de banda está en juego; dejarlo fuera por un
+    píxel sería peor que el falso positivo que esto evita."""
+    assert point_in_polygon((0, 50), CUADRO) is True
+    assert point_in_polygon((100, 100), CUADRO) is True
+
+
+def test_sin_zona_definida_todo_vale():
+    assert point_in_polygon((9999, 9999), None) is True
+    assert point_in_polygon((9999, 9999), []) is True
+
+
+def test_funciona_con_un_trapecio_de_perspectiva():
+    assert point_in_polygon((950, 400), TRAPECIO) is True     # centro del campo
+    assert point_in_polygon((950, 100), TRAPECIO) is False    # horizonte, arriba
+    assert point_in_polygon((950, 900), TRAPECIO) is False    # delante del campo
+    assert point_in_polygon((100, 400), TRAPECIO) is False    # fuera por la izquierda
+
+
+def test_un_poligono_concavo_se_resuelve_bien():
+    ele = [(0, 0), (100, 0), (100, 40), (40, 40), (40, 100), (0, 100)]
+    assert point_in_polygon((20, 20), ele) is True
+    assert point_in_polygon((80, 80), ele) is False, "la muesca de la L está fuera"
+
+
+def test_valida_y_normaliza_los_vertices():
+    assert validate_play_area(CUADRO) == [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+
+
+def test_menos_de_tres_vertices_no_delimita_nada():
+    with pytest.raises(PlayAreaError, match="al menos"):
+        validate_play_area([(0, 0), (10, 10)])
+
+
+def test_una_zona_degenerada_se_rechaza():
+    """Tres puntos alineados no encierran área: filtrarían absolutamente todo."""
+    with pytest.raises(PlayAreaError, match="degenerada"):
+        validate_play_area([(0, 0), (50, 50), (100, 100), (10, 10)])
+
+
+def test_el_mensaje_de_zona_degenerada_dice_qué_mirar():
+    with pytest.raises(PlayAreaError) as exc:
+        validate_play_area([(0, 0), (1, 1), (2, 2)])
+    assert "alineados" in str(exc.value)
