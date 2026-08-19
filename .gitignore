@@ -53,3 +53,8 @@ frontend/.env
 
 # Informe de cobertura para tools/check_cobertura.py
 coverage.json
+
+# Pesos del modelo: se provisionan, no se versionan
+weights/
+yolo11x.pt
+demo.mp4

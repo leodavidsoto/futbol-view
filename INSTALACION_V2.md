@@ -237,10 +237,46 @@ hashes: nadie puede fijar un hash que no ha calculado. Descarga de una fuente en
 la que confíes, ejecuta `--print-hashes` y pega el resultado. A partir de ahí,
 cualquier cambio del fichero se detecta.
 
+El hash de `yolo11x.pt` ya está fijado: se calculó descargándolo de la release
+oficial `ultralytics/assets v8.3.0` y comprobando que el modelo carga y detecta.
+
 **OSNet** (`osnet_x1_0_imagenet.pth`) no tiene una URL de descarga pública y
 estable que podamos fijar, así que el script no lo descarga: colócalo a mano y
 añade su hash. Sin él, el clasificador de equipos degrada a `grass_kmeans`, que
 es el valor por defecto de todas formas.
+
+---
+
+## 9 bis. Probar el sistema de extremo a extremo
+
+El repositorio no traía ningún vídeo, así que hay un generador:
+
+```bash
+python3 scripts/make_demo_video.py --salida demo.mp4     # 6 s, 150 frames
+```
+
+Construye una panorámica sobre una fotografía real de futbolistas (la que trae
+`ultralytics` en `assets/zidane.jpg`), así que **las personas y las detecciones
+son reales**. Sirve para comprobar que la tubería entera funciona; no sirve para
+medir la exactitud de las métricas, porque quien se mueve es la cámara y no los
+jugadores. Para eso hace falta un partido etiquetado a mano (`ANALISIS.md` §0.7).
+
+Recorrido completo:
+
+```bash
+python3 scripts/fetch_weights.py --dest ./weights
+python3 scripts/make_demo_video.py --salida demo.mp4
+MODEL_ROOT=$PWD/weights python -m uvicorn football_copilot_v2_backend:app --port 8000 &
+curl -s -X POST localhost:8000/api/config -H 'x-session-id: demo' \
+     -H 'content-type: application/json' \
+     -d '{"model":"weights/yolo11x.pt","detection_mode":"normal","tracker_type":"norfair"}'
+curl -s -N -X POST localhost:8000/api/process-video -H 'x-session-id: demo' \
+     -F 'file=@demo.mp4;type=video/mp4' | tail -1
+curl -s localhost:8000/api/report -H 'x-session-id: demo'
+```
+
+En CPU tarda alrededor de un segundo por frame analizado con `yolo11x`; con
+`yolo11n` va mucho más rápido y detecta algo peor.
 
 ---
 

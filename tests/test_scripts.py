@@ -207,3 +207,59 @@ def test_la_cli_informa_de_lo_que_hizo(tmp_path, capsys):
     _sesion(tmp_path, "vieja.json.gz", 30)
     assert purga.main(["--dir", str(tmp_path), "--max-age-days", "7", "--quiet"]) == 0
     assert "retención: 7 días" in capsys.readouterr().out
+
+
+# ── make_demo_video ─────────────────────────────────────────────────────
+demo = _cargar("make_demo_video")
+
+
+def test_la_ventana_de_recorte_no_se_sale_de_la_imagen():
+    ancho, alto, total = 1920, 1080, 150
+    for i in range(total):
+        x, y, w, h = demo.ventana_de_recorte(i, total, ancho, alto)
+        assert 0 <= x and x + w <= ancho
+        assert 0 <= y and y + h <= alto
+
+
+def test_el_movimiento_es_suave():
+    """Un salto brusco dispararía el rechazo de tramos imposibles, y el vídeo
+    mediría eso en vez de la tubería."""
+    ancho, alto, total = 1920, 1080, 150
+    posiciones = [demo.ventana_de_recorte(i, total, ancho, alto)[:2] for i in range(total)]
+    saltos = [
+        max(abs(b[0] - a[0]), abs(b[1] - a[1]))
+        for a, b in zip(posiciones, posiciones[1:])
+    ]
+    assert max(saltos) <= 12, f"salto máximo de {max(saltos)} px entre frames"
+
+
+def test_empieza_y_acaba_en_el_mismo_sitio():
+    """La panorámica es de ida y vuelta: sin discontinuidad al final."""
+    ancho, alto, total = 1920, 1080, 150
+    assert demo.ventana_de_recorte(0, total, ancho, alto) == demo.ventana_de_recorte(total - 1, total, ancho, alto)
+
+
+def test_sin_imagen_de_origen_lo_dice(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        demo.localizar_fuente(str(tmp_path / "no-existe.jpg"))
+
+
+def test_genera_un_mp4_reproducible(tmp_path):
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    fuente = tmp_path / "origen.png"
+    cv2.imwrite(str(fuente), np.full((720, 1280, 3), 60, dtype=np.uint8))
+    salida = tmp_path / "demo.mp4"
+    frames = demo.generar(salida, fuente, segundos=0.4, fps=25)
+
+    assert frames == 10 and salida.stat().st_size > 0
+    captura = cv2.VideoCapture(str(salida))
+    try:
+        assert captura.isOpened()
+        leidos = 0
+        while captura.read()[0]:
+            leidos += 1
+        assert leidos == frames
+    finally:
+        captura.release()

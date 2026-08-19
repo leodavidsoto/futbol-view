@@ -4,7 +4,7 @@
 |---|---|
 | **Estado** | EN_CURSO |
 | **Último agente** | claude (turno 1 de OPERACION) |
-| **Última actualización** | 2026-08-19T00:25:00Z |
+| **Última actualización** | 2026-08-19T05:40:00Z |
 | **Contrato publicado** | sí — `worklog/OPERACION/CONTRATO.md` v1 |
 | **Depende de** | `API` v1 (**publicado**); `PLATAFORMA` para cerrar |
 | **Requisitos asignados** | R-26, R-29, R-30 |
@@ -33,20 +33,34 @@ Y en este turno:
   de once síntomas con su causa.
 - 23 pruebas en `tests/test_scripts.py`.
 
+Y en el turno 2, ejecutando el sistema de verdad:
+
+- **`scripts/fetch_weights.py` verificado en ejecución**: descargó `yolo11x.pt`
+  (109 MB) de la release oficial, y con el hash ya fijado vuelve a verificarlo.
+- **Hash real de `yolo11x.pt` registrado** en `weights.sha256.json`. Ya no es un
+  `TODO(config)`: se calculó tras descargarlo y comprobar que el modelo carga y
+  detecta.
+- **`scripts/make_demo_video.py`**: el vídeo de prueba que no existía. Hace una
+  panorámica sobre una fotografía real de futbolistas, así que las detecciones
+  son reales. 5 pruebas.
+- **Recorrido de extremo a extremo ejecutado y documentado** en
+  `INSTALACION_V2.md` §9 bis: pesos → vídeo → backend → `/api/config` →
+  `/api/process-video` → `/api/report`, con detecciones, tracking, equipos y
+  métricas reales.
+
 ## Qué falta — **el carril NO cierra**
 
 El criterio de cierre es «desde un clon limpio, un comando levanta el sistema y
-analiza un vídeo de prueba de extremo a extremo». Falta:
+analiza un vídeo de prueba de extremo a extremo». El recorrido ya se ha hecho
+**a mano y funciona**; lo que falta:
 
 1. **Construir la imagen.** En este entorno **no hay demonio de Docker**, así que
-   el `Dockerfile` y el `compose` están escritos y revisados pero **nadie los ha
-   ejecutado**. Es lo primero que tiene que hacer quien retome, y hasta entonces
-   no se puede decir que funcionen.
-2. **Rellenar los hashes reales** de `weights.sha256.json`. Hoy son `TODO(config)`:
-   nadie puede fijar un hash que no ha calculado, y la regla 2 prohíbe inventarlo.
-3. **El vídeo de prueba.** No hay ninguno en el repositorio, así que el recorrido
-   de extremo a extremo no se puede automatizar. Sin él, el criterio de cierre se
-   verifica a mano.
+   el `Dockerfile` y el `compose` siguen escritos y revisados pero **nadie los ha
+   ejecutado**. Es lo primero que tiene que hacer quien retome.
+2. **Automatizar el recorrido** como una prueba de humo: hoy son los comandos de
+   la sección 9 bis, ejecutados a mano. En CPU tarda ~1 s por frame con
+   `yolo11x`, así que en CI habría que usar `yolo11n` y un vídeo más corto.
+3. **El hash de OSNet** sigue siendo `TODO(config)`: no tiene URL oficial fijada.
 
 ## Bloqueos activos
 
@@ -81,10 +95,20 @@ analiza un vídeo de prueba de extremo a extremo». Falta:
   suite corra en segundos.
 - El criterio de cierre —clon limpio, un comando, vídeo de prueba de extremo a
   extremo— **hoy es imposible** por los pesos. Ese es el trabajo, no un detalle.
-- No hay ningún vídeo de prueba en el repositorio, ni un partido etiquetado a
-  mano. Sin eso, ninguna prueba dice si las métricas se parecen a la realidad
-  (ver `ANALISIS.md` §0.7). Conseguirlo es trabajo de campo y no lo cubre ningún
-  carril.
+- Ya hay **generador** de vídeo de prueba, pero **sigue sin haber un partido
+  etiquetado a mano**. El demo hace una panorámica sobre una foto: las personas y
+  las detecciones son reales, pero quien se mueve es la cámara. Sirve para probar
+  la tubería, **no** para medir si las métricas se parecen a la realidad
+  (`ANALISIS.md` §0.7). Eso sigue siendo trabajo de campo.
+- **Lo que se vio al ejecutarlo de verdad**, y conviene saberlo antes de sacar
+  conclusiones de una demo: con la panorámica, Norfair produjo **4 tracks para 2
+  personas** y 15 tramos rechazados por salto imposible. No es un fallo del
+  tracker: el movimiento aparente de una panorámica es mucho más rápido que el de
+  un jugador, y el rechazo de saltos hizo justo su trabajo. Un vídeo de partido
+  real no se comporta así.
+- Sin calibrar, las métricas salen con la escala por defecto de 8 px/m, y la
+  interfaz lo marca con «⚠️ Escala px/m» en el panel de estadísticas. Las
+  velocidades de 30-40 km/h de la demo son eso, no jugadores de élite.
 - **Las tres líneas de `deploy/nginx.conf` que parecen de relleno no lo son.**
   `proxy_buffering off` es lo único que hace que el NDJSON llegue frame a frame:
   con el buffer puesto, el cliente no recibe nada hasta que termina el análisis y
