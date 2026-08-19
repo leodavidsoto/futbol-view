@@ -1,6 +1,6 @@
 # PLAN.md — relevo y siguiente ola
 
-Escrito al cerrar la sesión del 2026-08-19. Quien retome empieza por aquí, sigue
+Escrito al cerrar la sesión del 2026-08-19 (segunda tanda). Quien retome empieza por aquí, sigue
 por `AGENTS.md` y luego por el `STATE.md` de su carril.
 
 > El estado real de cada carril está en `worklog/EVENTS.jsonl`, que es el que
@@ -20,8 +20,10 @@ por `AGENTS.md` y luego por el `STATE.md` de su carril.
 | `CLIENTE` | `EN_CURSO` | v1 |
 | `OPERACION` | `EN_CURSO` | v1 |
 
-360 pruebas de backend, 115 de frontend, CI en verde, `check_carriles` y
-`check_cobertura` sin hallazgos.
+543 pruebas de backend, 143 de frontend, `check_carriles` y `check_cobertura`
+sin hallazgos. Verificado también **simulando el entorno de CI** —sin
+ultralytics, sahi ni torch— porque una prueba que sólo pasa con las
+dependencias pesadas instaladas está probando la máquina, no el código.
 
 **Ninguno de los cuatro `LISTO_PARA_REVISION` es `HECHO`**: falta la revisión
 cruzada, que por diseño la hace un agente que no los implementó. Ese es el
@@ -34,6 +36,41 @@ modelo de fútbol, resolución completa, calibración y zona de juego: 23 jugado
 por frame, distancias de 5,7 a 9,8 km/h de media por jugador —realistas—,
 posesión 48/52, balón a 1,67 m del jugador más cercano, y ni un error en el
 stream. El recorrido completo está en `INSTALACION_V2.md` §9 bis.
+
+---
+
+## 1 bis. Lo que trajo la segunda tanda
+
+Cuatro piezas, todas nacidas de `INVESTIGACION.md`, que es el registro de qué se
+adopta del estado del arte y qué no.
+
+| Pieza | Qué resuelve |
+|---|---|
+| `fcopilot/load.py` | Carga externa de verdad: bandas con respaldo bibliográfico, **aceleraciones y frenadas** que no existían, normalización por minuto y caída de rendimiento |
+| `fcopilot/pitch.py` | El campo como dato: ~33 puntos de referencia con nombre para 11, 7 y sala. **Calibrar deja de exigir saber cuánto mide el campo** |
+| `fcopilot/tracklets.py` | Cose los trozos en los que se parte un jugador. Ataca el 51-identidades-por-22 |
+| `fcopilot/dashboard.py` + vista | El panel del DT, que **empieza por si te puedes fiar de los números** |
+
+### Los defectos que aparecieron por el camino
+
+Ninguno se encontró leyendo: salieron de ejecutarlo, de mutar las pruebas o de
+la revisión cruzada. Todos son del tipo que produce datos plausibles y falsos.
+
+- La primera observación de cada jugador **fabricaba 25 m/s² de aceleración**
+  —el récord humano ronda 10— comparando contra un cero que nadie midió.
+- Existían **dos tablas de bandas de velocidad** con cortes distintos en el
+  núcleo, y una tercera en el cliente que también discrepaba.
+- El coste de fusión **premiaba saltarse un trozo**: con cuatro fragmentos
+  consecutivos producía 1→3 y 2→4 en vez de la cadena.
+- `quad_is_degenerate` **rechazaba cuatro esquinas válidas** señaladas en
+  zigzag, porque medía el área del polígono.
+- `find_homography` comprobaba **sólo los cuatro primeros** puntos, y el centro
+  del campo está sobre la diagonal entre dos esquinas.
+- Un jugador visto **dos segundos** encabezaba el ranking de intensidad con
+  130 m/min.
+- `absorb` **perdía dos sprints por costura**.
+- El descriptor de apariencia **se congelaba en los primeros recortes**.
+- `process_video` podía **dejar el servicio en 429 para siempre**.
 
 ---
 
@@ -81,7 +118,7 @@ escribirla es parte del trabajo, no un extra.
    lanza un KMeans completo en **cada** `predict()` —unas 22 por frame— y
    `_features` crece sin límite.
 
-**`CLIENTE`** — dos:
+**`CLIENTE`** — dos de la primera revisión, más tres de la segunda:
 
 7. **El POST de calibración se dispara dentro del actualizador de
    `setCalibPoints`**, así que en desarrollo con StrictMode se envía dos veces.
@@ -89,6 +126,20 @@ escribirla es parte del trabajo, no un extra.
    `mode` sólo vale `"video"` o `"webcam"`. Los frames de la webcam **no se
    envían nunca**. Viene de antes de todo este trabajo y por eso el revisor no
    lo contó como hallazgo del diff, pero es un modo entero que no funciona.
+9. **Los canvas de overlay y captura están fijos a 854×480** mientras
+   `process_width`/`process_height` ya son configurables: subir la resolución
+   deja detecciones fuera del canvas.
+10. **«Recalibrar» sólo limpia el estado local**; el backend conserva la
+    homografía anterior, así que la interfaz y el servidor discrepan.
+11. **`App.jsx` sigue en 1271 líneas**, por encima del criterio de 400.
+
+**`API`** — uno más de la segunda revisión:
+
+12. **`/health` responde sin credencial y acepta `session_id`**, devolviendo
+    estado, métricas y modelo de esa sesión. Que `/health` sea abierto es
+    deliberado y está en el contrato; que revele el estado de **una sesión
+    concreta** a quien acierte el identificador, no. Cambiarlo toca al cliente,
+    así que es una decisión de una puerta.
 
 ---
 
@@ -110,14 +161,22 @@ declararse `HECHO` sin ella, y porque un hallazgo suyo puede cambiar lo demás.
 
 ### Lo que de verdad mejoraría el producto
 
+> La lista de abajo sigue siendo válida y **el orden no ha cambiado**, pero dos
+> de los tres ya tienen la pieza puesta: la fragmentación tiene un fusionador
+> (§1 bis) y la calibración tiene plantillas de campo. Lo que falta de cada uno
+> está anotado.
+
 Por encima de la deuda de arriba, y por orden de impacto sobre lo que el usuario
 ve:
 
-1. **Detección del balón.** Es lo que bloquea posesión, pases y todo lo táctico.
-   Un balón a esa distancia son cuatro píxeles; ni YOLO genérico ni el modelo de
-   fútbol que probamos lo ven de forma fiable, y la zona de juego sólo evita los
-   falsos positivos del entorno. Necesita un modelo específico de balón o una
-   cámara más cerca.
+1. **Detección del balón.** Sigue siendo el techo, y ahora es el único de los
+   tres que no tiene pieza. Un balón a esa distancia son cuatro píxeles; ni YOLO
+   genérico ni el modelo de fútbol que probamos lo ven de forma fiable. Las dos
+   vías están evaluadas en `INVESTIGACION.md` §4: inferencia por teselas
+   específica de balón —la pieza SAHI ya existe, pero está pensada para
+   personas— o un modelo dedicado. Mientras tanto, el panel **cuenta en cuántos
+   frames se vio el balón y avisa de que la posesión es orientativa** por debajo
+   del 35 %, que es lo único honesto que se puede hacer sin resolverlo.
 2. **Fragmentación de tracks.** 51 identidades para ~22 jugadores, porque en CPU
    hay que analizar 1 de cada 5 frames. Con GPU, o con `yolo11n`, el
    `frame_skip` baja y el tracker asocia bien. Es la causa del reparto de
