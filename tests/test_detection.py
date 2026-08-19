@@ -200,3 +200,25 @@ def test_un_detector_sin_las_claves_nuevas_no_se_rompe(fake_yolo, frame):
     detector = Detector(dict(CONFIG_NORMAL))          # sin person_class ni ball_class
     assert (detector.person_class, detector.ball_class) == (PERSON_CLASS, BALL_CLASS)
     assert len(detector.predict(frame)[0]) == 1
+
+
+def test_cambiar_las_clases_en_caliente_afecta_al_detector(fake_yolo, frame):
+    """Se leen en vivo de la configuración, no se congelan en el constructor.
+
+    Era un fallo real: `apply_config` actualiza el diccionario de configuración
+    que el detector comparte por referencia, así que un índice cacheado en
+    `__init__` sobrevivía a un cambio de modelo. El detector seguía pidiendo las
+    clases del modelo anterior y devolvía casi nada, con un síntoma que no se
+    parecía en nada a su causa.
+    """
+    config = dict(CONFIG_NORMAL)
+    detector = Detector(config)
+    assert detector.person_class == PERSON_CLASS
+
+    config["person_class"] = CLASES_FUTBOL["player"]
+    config["ball_class"] = CLASES_FUTBOL["ball"]
+    assert detector.person_class == CLASES_FUTBOL["player"]
+
+    fake_yolo.set_script([[((10, 10, 34, 70), 0.9, CLASES_FUTBOL["player"])]])
+    assert len(detector.predict(frame)[0]) == 1
+    assert sorted(fake_yolo.last_kwargs["classes"]) == [0, 2]

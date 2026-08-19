@@ -115,10 +115,21 @@ class Detector:
         self.config = config
         self.model_path = str(config["model_path"])
         self.model = shared_yolo_registry.get(self.model_path)
-        self.person_class = int(config.get("person_class", PERSON_CLASS))
-        self.ball_class = int(config.get("ball_class", BALL_CLASS))
         self.sahi_model = None
         self._init_sahi()
+
+    # Los índices se leen **en vivo** de la configuración, como el resto de
+    # parámetros. Guardarlos en el constructor los congelaba: al cambiar de
+    # modelo desde la API, `apply_config` actualizaba el diccionario pero el
+    # detector seguía filtrando por las clases del modelo anterior, así que
+    # devolvía casi nada y el fallo no se parecía en nada a su causa.
+    @property
+    def person_class(self) -> int:
+        return int(self.config.get("person_class", PERSON_CLASS))
+
+    @property
+    def ball_class(self) -> int:
+        return int(self.config.get("ball_class", BALL_CLASS))
 
     def _init_sahi(self) -> None:
         self.sahi_model = None
