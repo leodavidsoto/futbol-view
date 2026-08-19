@@ -4,7 +4,13 @@ import math
 
 import pytest
 
-from fcopilot.kinematics import KinematicsConfig, PlayerKinematics, Sample, zone_for_speed
+from fcopilot.kinematics import (
+    SPEED_ZONES,
+    KinematicsConfig,
+    PlayerKinematics,
+    Sample,
+    zone_for_speed,
+)
 
 
 def line_run(kin: PlayerKinematics, *, steps: int, dx_px: float, dt: float, start: float = 0.0) -> None:
@@ -101,13 +107,19 @@ def test_finalize_cierra_un_sprint_en_curso():
     assert kin.sprints == 1
 
 
-@pytest.mark.parametrize(
-    "speed,zone",
-    [(0.0, "caminando"), (6.9, "caminando"), (7.0, "trote"), (15.0, "carrera"),
-     (22.0, "alta_intensidad"), (30.0, "sprint")],
-)
-def test_zonas_de_intensidad(speed, zone):
-    assert zone_for_speed(speed) == zone
+@pytest.mark.parametrize("nombre,bajo,alto", SPEED_ZONES, ids=[z[0] for z in SPEED_ZONES])
+def test_zonas_de_intensidad(nombre, bajo, alto):
+    """La tabla se comprueba contra sí misma, no contra una copia de sus números.
+
+    Antes esta prueba repetía los cortes a mano. Cuando las bandas pasaron a las
+    de la bibliografía de GPS, la copia quedó obsoleta y la prueba falló por el
+    motivo equivocado: no porque el código estuviera mal, sino porque había dos
+    listas de cortes y una se quedó atrás. Los valores concretos de cada borde
+    se fijan en ``tests/test_load.py``, que es donde vive la tabla.
+    """
+    assert zone_for_speed(bajo) == nombre
+    if alto != math.inf:
+        assert zone_for_speed(alto) != nombre
 
 
 def test_zonas_reparten_toda_la_distancia():
@@ -168,6 +180,7 @@ def test_resumen_tiene_las_claves_del_informe():
 import pytest
 
 from fcopilot.kinematics import (
+    SPEED_ZONES,
     KinematicsConfig,
     PlayerKinematics,
     Sample,

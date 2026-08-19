@@ -1,6 +1,6 @@
 # Contrato de NUCLEO
 
-**Versión:** 1 · **Publicado:** 2026-08-18 · **Estable desde:** 2026-08-18
+**Versión:** 2 · **Publicado:** 2026-08-19 · **Estable desde:** 2026-08-18
 
 Todo lo de aquí es importable desde `fcopilot` y no depende de FastAPI, OpenCV,
 YOLO ni torch. Se puede ejercitar entero sin vídeo y sin modelo.
@@ -96,6 +96,75 @@ tracker.to_state() / PossessionTracker.from_state(state)
 `nearest_holder` devuelve `("none", inf)` si no hay balón, no hay jugadores, o
 el más cercano supera `threshold`.
 
+### `ExternalLoad` — carga externa del jugador
+
+Lo que decide una sustitución no es la distancia total, sino cuánta fue a alta
+intensidad, cuántas aceleraciones y frenadas hubo, y si eso está cayendo.
+
+```python
+carga = ExternalLoad(config: LoadConfig | None)
+carga.add_step(*, t_start, dt_s, distance_m, speed_start_kmh, speed_end_kmh) -> None
+carga.finalize() -> None
+carga.summary() -> dict
+carga.profile() -> list[dict]          # un bloque por minuto
+carga.dropoff() -> dict | None
+carga.relative_thresholds() -> dict
+carga.to_state() / ExternalLoad.from_state(state, config)
+```
+
+**No se construye a mano en el bucle de frames.** `PlayerKinematics` la posee y
+la alimenta con los tramos que ya validó, para que «tramo válido» tenga una sola
+definición. Quien la instancie por su cuenta y le pase muestras crudas obtendrá
+métricas que incluyen los saltos por cambio de identidad del tracker.
+
+| Garantía | Detalle |
+|---|---|
+| **La tabla de bandas es única** | `kinematics.SPEED_ZONES` **es** `load.SPEED_BANDS`, el mismo objeto. Existieron como dos tablas con cortes distintos (7/14/20/25 y 7,2/14,4/19,8/25,2); fijado por `test_la_cinematica_y_la_carga_comparten_la_misma_tabla` |
+| **Las bandas suman la distancia total** | Sin huecos ni solapes: los bordes se comprueban contra la propia tabla |
+| **`speed_start_kmh=None` no es cero** | En el primer tramo de un jugador no hay velocidad previa. Tratarlo como cero fabricaba 25 m/s² en la primera observación de **cada** jugador |
+| **Un esfuerzo tiene que sostenerse** | Por debajo de `min_effort_s` no cuenta; un sprint, además, necesita `min_sprint_m` |
+| **`finalize()` cierra lo abierto** | Sin él se pierde el sprint con el que termina el partido |
+| **La caída se normaliza por tiempo observado** | Un jugador tapado la mitad del tramo final no aparece como fundido. Fijado por `test_ver_menos_al_jugador_no_es_lo_mismo_que_verle_bajar` |
+| **Memoria acotada** | `MAX_BUCKETS` bloques y `MAX_EFFORTS` esfuerzos con detalle; los contadores no se topan |
+
+`summary()` devuelve, con estas unidades exactas:
+
+```python
+{
+  "total_dist_m": float, "high_intensity_m": float, "sprint_dist_m": float,
+  "bands_m": {str: float},          # claves = nombres de SPEED_BANDS
+  "sprints": int, "accelerations": int, "decelerations": int,
+  "high_intensity_efforts": int,    # sprints + aceleraciones + frenadas
+  "max_accel_ms2": float, "max_decel_ms2": float,   # m/s², la frenada es negativa
+  "peak_speed_kmh": float, "observed_s": float,
+  "per_minute": {"dist_m", "high_intensity_m", "sprint_dist_m"},   # por minuto OBSERVADO
+  "relative_thresholds_kmh": {"peak_kmh", "high_kmh", "sprint_kmh"},
+  "dropoff": {"baseline_hi_m_per_min", "recent_hi_m_per_min",
+              "change_pct", "window_s"} | None,
+}
+```
+
+#### Los umbrales no son una constante de la naturaleza
+
+Las bandas (14,4 / 19,8 / 25,2 km/h) son las de la bibliografía de GPS en
+fútbol, y **cada fabricante corta donde quiere**. Quien compare estas cifras con
+las de un GPS real tiene que mirar antes con qué bandas las cortó el GPS. Por
+eso hay también umbrales **relativos** al pico de cada jugador (70 % y 90 %),
+que es lo que la literatura reciente recomienda.
+
+#### Lo que este módulo no puede arreglar
+
+**Las aceleraciones son la métrica más sensible al ruido de todo el sistema:**
+derivan una velocidad que ya es una derivada de una posición estimada. Un
+tracker que tiembla dos píxeles produce aceleraciones inventadas. `min_effort_s`
+es una defensa parcial, no una solución: **con tracking malo, el contador de
+aceleraciones sube**. Quien muestre esa cifra debe mostrar al lado
+`rejected_steps`, que es el indicador de calidad del tracking.
+
+`dropoff()` devuelve `None` cuando no hay al menos una ventana completa de
+referencia. **`None` no es cero:** cero afirmaría «no ha caído», y eso no
+consta.
+
 ### `build_report` — el informe del partido
 
 ```python
@@ -139,8 +208,12 @@ punto cae en el infinito proyectivo.
 
 ### Tablas de dominio
 
-`SPEED_ZONES`, `TIME_SOURCE_VIDEO`, `TIME_SOURCE_CLOCK`, `TIME_SOURCES`. Son
-dato, no condicionales: quien añada una zona añade su columna en `zones_m` sola.
+`SPEED_BANDS` (alias `SPEED_ZONES`), `HIGH_INTENSITY_KMH`, `SPRINT_KMH`,
+`ACCEL_THRESHOLD_MS2`, `TIME_SOURCE_VIDEO`, `TIME_SOURCE_CLOCK`, `TIME_SOURCES`.
+Son dato, no condicionales: quien añada una banda añade su columna en `bands_m`
+sola. Los umbrales sueltos **tienen que coincidir con el borde de su banda**, y
+eso lo comprueba una prueba: moverlos por separado dejaría el informe diciendo
+que hay 200 m de alta intensidad y 0 m en la banda de alta velocidad.
 
 ## Errores
 
@@ -177,6 +250,27 @@ dato, no condicionales: quien añada una zona añade su columna en `zones_m` sol
 | `CLIENTE` | Indirectamente: la forma de `summary()` y de `snapshot()` viaja en cada frame del stream |
 
 ## Cambios desde la versión anterior
+
+### v2 (2026-08-19)
+
+- **Rompe: los nombres y los cortes de las bandas cambian.** `carrera` y
+  `alta_intensidad` pasan a ser `alta_velocidad` y `muy_alta_velocidad`, y los
+  cortes pasan de 7/14/20/25 a 7,2/14,4/19,8/25,2 km/h, que son los de la
+  bibliografía de GPS en fútbol. Quien tuviera un informe guardado con las
+  claves viejas verá claves nuevas. `zones_m` sigue existiendo con ese nombre.
+- **Rompe: `zone_distance_m` es ahora una propiedad de sólo lectura** que
+  devuelve el diccionario de `load`. Antes era un acumulador propio; eran dos
+  acumuladores del mismo recorrido y podían separarse en silencio.
+- **Añade:** `ExternalLoad`, `LoadConfig`, `SquadLoad`, `band_for_speed`, y la
+  clave `load` en `summary()` de cada jugador.
+- **Añade:** en el informe, `totals.high_intensity_m`, `totals.accelerations`,
+  `totals.decelerations` y tres rankings nuevos (`high_intensity`,
+  `intensity_per_min`, `accelerations`).
+- **Compatibilidad de estado:** una sesión guardada por v1 se restaura; se
+  recuperan las bandas y el resto de la carga arranca a cero. Lo que no se midió
+  entonces no se inventa.
+
+### v1 (2026-08-18)
 
 Primera publicación. Respecto del código previo a este contrato:
 

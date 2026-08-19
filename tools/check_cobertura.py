@@ -32,6 +32,7 @@ INFORME = ROOT / "coverage.json"
 MINIMOS: Dict[str, Tuple[int, str]] = {
     "fcopilot/__init__.py": (100, ""),
     "fcopilot/kinematics.py": (95, ""),
+    "fcopilot/load.py": (95, ""),
     "fcopilot/possession.py": (95, ""),
     "fcopilot/report.py": (95, ""),
     "fcopilot/geometry.py": (90, ""),

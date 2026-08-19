@@ -11,7 +11,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from fcopilot.kinematics import SPEED_ZONES, TIME_SOURCE_VIDEO, PlayerKinematics
+from fcopilot.kinematics import TIME_SOURCE_VIDEO, PlayerKinematics
+from fcopilot.load import SquadLoad
 from fcopilot.possession import TEAM_1, TEAM_2, PossessionTracker
 
 TEAMS = (TEAM_1, TEAM_2)
@@ -30,30 +31,40 @@ def _player_entry(track_id: int, meta: Mapping[str, Any], include_positions: boo
     return entry
 
 
-def _team_block(entries: Iterable[Dict[str, Any]], team: str) -> Dict[str, Any]:
-    members = [e for e in entries if e["team"] == team]
-    if not members:
-        return {
-            "players": 0,
-            "total_dist_m": 0.0,
-            "avg_dist_m": 0.0,
-            "top_speed_kmh": 0.0,
-            "sprints": 0,
-            "zones_m": {name: 0.0 for name, _, _ in SPEED_ZONES},
+def _carga(entry: Mapping[str, Any], clave: str) -> float:
+    """Lee una métrica de carga de un jugador, con 0 si el jugador no la tiene."""
+    return float((entry.get("load") or {}).get(clave, 0.0) or 0.0)
+
+
+def _ranking(entries: Iterable[Dict[str, Any]], clave) -> List[Dict[str, Any]]:
+    """Los diez primeros por *clave*, en el formato común de los rankings."""
+    ordenados = sorted(entries, key=clave, reverse=True)[:10]
+    return [
+        {
+            "track_id": e["track_id"],
+            "name": e["name"],
+            "team": e["team"],
+            "value": round(clave(e), 1),
         }
-    total = sum(e["total_dist_m"] for e in members)
-    zones = {name: 0.0 for name, _, _ in SPEED_ZONES}
+        for e in ordenados
+    ]
+
+
+def _team_block(entries: Iterable[Dict[str, Any]], team: str) -> Dict[str, Any]:
+    """Agregado de un equipo.
+
+    La suma de carga la hace :class:`SquadLoad`, no un bucle escrito aquí: si
+    fueran dos implementaciones, el total del equipo podría no ser la suma de
+    sus jugadores y nadie lo notaría.
+    """
+    members = [e for e in entries if e["team"] == team]
+    escuadra = SquadLoad()
     for entry in members:
-        for name, value in entry["zones_m"].items():
-            zones[name] = round(zones.get(name, 0.0) + value, 1)
-    return {
-        "players": len(members),
-        "total_dist_m": round(total, 1),
-        "avg_dist_m": round(total / len(members), 1),
-        "top_speed_kmh": round(max(e["max_speed_kmh"] for e in members), 1),
-        "sprints": sum(e["sprints"] for e in members),
-        "zones_m": zones,
-    }
+        escuadra.add(entry.get("load") or {})
+    bloque: Dict[str, Any] = dict(escuadra.as_dict())
+    bloque["zones_m"] = bloque["bands_m"]
+    bloque["top_speed_kmh"] = round(max((e["max_speed_kmh"] for e in members), default=0.0), 1)
+    return bloque
 
 
 def build_report(
@@ -99,7 +110,10 @@ def build_report(
         "totals": {
             "players_tracked": len(entries),
             "total_dist_m": round(sum(e["total_dist_m"] for e in entries), 1),
-            "sprints": sum(e["sprints"] for e in entries),
+            "high_intensity_m": round(sum(_carga(e, "high_intensity_m") for e in entries), 1),
+            "sprints": sum(int(_carga(e, "sprints")) for e in entries),
+            "accelerations": sum(int(_carga(e, "accelerations")) for e in entries),
+            "decelerations": sum(int(_carga(e, "decelerations")) for e in entries),
             "top_speed_kmh": round(max((e["max_speed_kmh"] for e in entries), default=0.0), 1),
             "rejected_steps": sum(e["rejected_steps"] for e in entries),
             "duplicate_samples": sum(e.get("duplicate_samples", 0) for e in entries),
@@ -117,6 +131,16 @@ def build_report(
                 {"track_id": e["track_id"], "name": e["name"], "team": e["team"], "value": e["sprints"]}
                 for e in sorted(entries, key=lambda e: e["sprints"], reverse=True)[:10]
             ],
+            "high_intensity": _ranking(entries, lambda e: _carga(e, "high_intensity_m")),
+            # Metros por minuto observado: es el único ranking en el que un
+            # suplente que entró diez minutos puede aparecer por delante de un
+            # titular, y por eso es el que compara esfuerzo y no permanencia.
+            "intensity_per_min": _ranking(
+                entries, lambda e: float((e.get("load") or {}).get("per_minute", {}).get("high_intensity_m", 0.0))
+            ),
+            "accelerations": _ranking(
+                entries, lambda e: _carga(e, "accelerations") + _carga(e, "decelerations")
+            ),
         },
         "players": entries,
     }

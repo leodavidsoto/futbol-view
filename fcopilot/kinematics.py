@@ -20,6 +20,8 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from fcopilot.load import SPEED_BANDS, SPRINT_KMH, ExternalLoad, LoadConfig, band_for_speed
+
 #: Base de tiempo de una muestra. ``video`` es el único valor con el que las
 #: métricas significan lo que dicen; ``reloj`` sólo es legítimo en directo
 #: (webcam), donde no existe un tiempo de vídeo que consultar.
@@ -38,14 +40,13 @@ class TimeBaseError(ValueError):
     """
 
 
-#: Zonas de intensidad (nombre, km/h mínimo inclusive, km/h máximo exclusive).
-SPEED_ZONES: Tuple[Tuple[str, float, float], ...] = (
-    ("caminando", 0.0, 7.0),
-    ("trote", 7.0, 14.0),
-    ("carrera", 14.0, 20.0),
-    ("alta_intensidad", 20.0, 25.0),
-    ("sprint", 25.0, math.inf),
-)
+#: Zonas de intensidad. **Es la misma tabla que ``load.SPEED_BANDS``, no una
+#: copia**: hubo un momento en que existieron las dos con cortes distintos
+#: (7/14/20/25 aquí, 7,2/14,4/19,8/25,2 allí) y ese es exactamente el tipo de
+#: duplicado que produce dos informes que no cuadran y nadie sabe cuál miente.
+#: El alias se mantiene porque el nombre ``SPEED_ZONES`` ya viaja en el contrato
+#: publicado de NUCLEO.
+SPEED_ZONES: Tuple[Tuple[str, float, float], ...] = SPEED_BANDS
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ class KinematicsConfig:
     max_speed_kmh: float = 45.0
     speed_window_s: float = 0.5
     smoothing: float = 0.5
-    sprint_kmh: float = 25.0
+    sprint_kmh: float = SPRINT_KMH
     min_sprint_s: float = 0.7
     max_history: int = 300
 
@@ -92,30 +93,35 @@ class KinematicsConfig:
             raise ValueError("speed_window_s debe ser > 0")
 
 
-def zone_for_speed(speed_kmh: float) -> str:
-    """Zona de intensidad a la que pertenece una velocidad."""
-    for name, low, high in SPEED_ZONES:
-        if low <= speed_kmh < high:
-            return name
-    return SPEED_ZONES[-1][0]
+#: Alias histórico de :func:`fcopilot.load.band_for_speed`. Misma tabla, misma
+#: función: no hay dos maneras de decidir en qué banda cae una velocidad.
+zone_for_speed = band_for_speed
 
 
 class PlayerKinematics:
     """Estado cinemático acumulado de un track."""
 
-    def __init__(self, track_id: int, config: Optional[KinematicsConfig] = None):
+    def __init__(
+        self,
+        track_id: int,
+        config: Optional[KinematicsConfig] = None,
+        load_config: Optional[LoadConfig] = None,
+    ):
         self.track_id = track_id
         self.config = config or KinematicsConfig()
+        #: Carga externa del jugador. La alimenta ``update`` con los tramos que
+        #: ya validó, para que "tramo válido" tenga una sola definición.
+        self.load = ExternalLoad(load_config)
         self.samples: List[Sample] = []
         self.total_distance_m = 0.0
         self.speed_kmh = 0.0
         self.max_speed_kmh = 0.0
-        self.zone_distance_m: Dict[str, float] = {name: 0.0 for name, _, _ in SPEED_ZONES}
         self.sprints = 0
         self.rejected_steps = 0
         self.duplicate_samples = 0
         self.active_seconds = 0.0
         self._sprint_elapsed = 0.0
+        self._last_step_kmh: Optional[float] = None
         self._first_t: Optional[float] = None
         self._last_t: Optional[float] = None
 
@@ -177,8 +183,18 @@ class PlayerKinematics:
                     self.rejected_steps += 1
                 else:
                     self.total_distance_m += step_m
-                    self.zone_distance_m[zone_for_speed(step_kmh)] += step_m
                     self.active_seconds += dt
+                    # La carga externa se alimenta aquí, con el tramo ya
+                    # validado, y con la velocidad CRUDA: el suavizado
+                    # exponencial aplana las aceleraciones que hay que contar.
+                    self.load.add_step(
+                        t_start=previous.t,
+                        dt_s=dt,
+                        distance_m=step_m,
+                        speed_start_kmh=self._last_step_kmh,
+                        speed_end_kmh=step_kmh,
+                    )
+                    self._last_step_kmh = step_kmh
 
         self.speed_kmh = self._compute_speed()
         self.max_speed_kmh = max(self.max_speed_kmh, self.speed_kmh)
@@ -217,12 +233,22 @@ class PlayerKinematics:
         self._sprint_elapsed = 0.0
 
     def finalize(self) -> None:
-        """Cierra un sprint en curso al terminar el análisis."""
+        """Cierra los esfuerzos en curso al terminar el análisis."""
         if self._sprint_elapsed >= self.config.min_sprint_s:
             self.sprints += 1
         self._sprint_elapsed = 0.0
+        self.load.finalize()
 
     # ── Lectura ────────────────────────────────────────────────────────
+    @property
+    def zone_distance_m(self) -> Dict[str, float]:
+        """Metros por banda de intensidad.
+
+        Es el diccionario de ``self.load``, no una copia: cuando eran dos
+        acumuladores independientes podían separarse sin que nada lo delatara.
+        """
+        return self.load.band_distance_m
+
     @property
     def avg_speed_kmh(self) -> float:
         if self.active_seconds <= 0:
@@ -250,6 +276,7 @@ class PlayerKinematics:
             "rejected_steps": self.rejected_steps,
             "duplicate_samples": self.duplicate_samples,
             "zones_m": {k: round(v, 1) for k, v in self.zone_distance_m.items()},
+            "load": self.load.summary(),
         }
 
     # ── Serialización (persistencia de sesión) ─────────────────────────
@@ -260,7 +287,7 @@ class PlayerKinematics:
             "total_distance_m": self.total_distance_m,
             "speed_kmh": self.speed_kmh,
             "max_speed_kmh": self.max_speed_kmh,
-            "zone_distance_m": dict(self.zone_distance_m),
+            "load": self.load.to_state(),
             "sprints": self.sprints,
             "rejected_steps": self.rejected_steps,
             "duplicate_samples": self.duplicate_samples,
@@ -286,9 +313,16 @@ class PlayerKinematics:
         obj.total_distance_m = float(state.get("total_distance_m", 0.0))
         obj.speed_kmh = float(state.get("speed_kmh", 0.0))
         obj.max_speed_kmh = float(state.get("max_speed_kmh", 0.0))
-        zones = state.get("zone_distance_m") or {}
-        for name, _, _ in SPEED_ZONES:
-            obj.zone_distance_m[name] = float(zones.get(name, 0.0))
+        if state.get("load"):
+            obj.load = ExternalLoad.from_state(state["load"], obj.load.config)
+        else:
+            # Estado guardado por una versión anterior, que serializaba las
+            # bandas sueltas y no tenía carga. Se restauran las bandas y el
+            # resto de la carga arranca a cero: es lo único honesto que se
+            # puede hacer sin inventarse aceleraciones que nunca se midieron.
+            zones = state.get("zone_distance_m") or {}
+            for name, _, _ in SPEED_BANDS:
+                obj.load.band_distance_m[name] = float(zones.get(name, 0.0))
         obj.sprints = int(state.get("sprints", 0))
         obj.rejected_steps = int(state.get("rejected_steps", 0))
         obj.duplicate_samples = int(state.get("duplicate_samples", 0))

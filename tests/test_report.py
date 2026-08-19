@@ -90,3 +90,72 @@ def test_equipo_sin_jugadores_no_rompe_los_maximos():
     informe = build_report(jugadores, PossessionTracker())
     assert informe["teams"]["team_2"]["top_speed_kmh"] == 0.0
     assert informe["teams"]["team_2"]["zones_m"]["sprint"] == 0.0
+
+
+# ── Carga externa en el informe ─────────────────────────────────────────
+def _jugador_con_carga(track_id: int, team: str, velocidad_kmh: float, pasos: int = 60):
+    """Un jugador que corre en línea recta a velocidad constante."""
+    from fcopilot.kinematics import PlayerKinematics, Sample
+
+    kin = PlayerKinematics(track_id)
+    dt = 0.2
+    for i in range(pasos):
+        t = i * dt
+        kin.update(Sample(frame=i, t=t, x=0.0, y=0.0, wx=t * velocidad_kmh / 3.6, wy=0.0))
+    kin.finalize()
+    return {"kinematics": kin, "name": f"J{track_id}", "team": team}
+
+
+def test_el_total_del_equipo_es_la_suma_de_sus_jugadores():
+    """Si el bloque de equipo tuviera su propio bucle, podría dejar de cuadrar.
+
+    El agregado lo hace ``SquadLoad``, el mismo que suma en cualquier otro sitio.
+    Esta prueba es la que impide que alguien reescriba el bucle "para que sea
+    más rápido" y produzca un informe en el que el equipo no suma sus partes.
+    """
+    from fcopilot.possession import PossessionTracker
+
+    jugadores = {
+        1: _jugador_con_carga(1, "team_1", 18.0),
+        2: _jugador_con_carga(2, "team_1", 22.0),
+        3: _jugador_con_carga(3, "team_2", 10.0),
+    }
+    informe = build_report(jugadores, PossessionTracker(), include_positions=False)
+
+    for equipo in ("team_1", "team_2"):
+        suma = sum(
+            j["load"]["total_dist_m"] for j in informe["players"] if j["team"] == equipo
+        )
+        assert informe["teams"][equipo]["total_dist_m"] == pytest.approx(suma, abs=0.2)
+
+
+def test_la_distancia_de_carga_y_la_de_cinematica_no_se_separan():
+    """Son dos acumuladores del mismo recorrido; divergir sería un fallo mudo."""
+    from fcopilot.possession import PossessionTracker
+
+    jugadores = {1: _jugador_con_carga(1, "team_1", 19.0)}
+    informe = build_report(jugadores, PossessionTracker(), include_positions=False)
+    jugador = informe["players"][0]
+    assert jugador["load"]["total_dist_m"] == pytest.approx(jugador["total_dist_m"], abs=0.2)
+
+
+def test_el_ranking_por_minuto_premia_al_que_mas_corre_no_al_que_mas_juega():
+    """Es la diferencia entre medir esfuerzo y medir permanencia."""
+    from fcopilot.possession import PossessionTracker
+
+    jugadores = {
+        1: _jugador_con_carga(1, "team_1", 16.0, pasos=300),   # mucho rato, ritmo bajo
+        2: _jugador_con_carga(2, "team_1", 24.0, pasos=40),    # poco rato, ritmo alto
+    }
+    informe = build_report(jugadores, PossessionTracker(), include_positions=False)
+    assert informe["leaderboards"]["distance"][0]["track_id"] == 1
+    assert informe["leaderboards"]["intensity_per_min"][0]["track_id"] == 2
+
+
+def test_un_equipo_sin_jugadores_da_ceros_y_no_revienta():
+    from fcopilot.possession import PossessionTracker
+
+    informe = build_report({}, PossessionTracker(), include_positions=False)
+    assert informe["teams"]["team_1"]["players"] == 0
+    assert informe["teams"]["team_1"]["avg_dist_m"] == 0.0
+    assert informe["totals"]["accelerations"] == 0
