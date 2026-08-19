@@ -271,3 +271,19 @@ def test_la_poda_se_ejecuta_durante_el_analisis(analyzer, fake_yolo, green_frame
 
     correr(analyzer, fake_yolo, [players_row(2) for _ in range(12)], frames=12, dt=0.1)
     assert len(llamadas) == 2   # frames 5 y 10
+
+
+def test_restaurar_una_sesion_con_el_modelo_desaparecido(analyzer, fake_yolo, green_frame):
+    """Perder los pesos no debe costar los nombres ni las métricas del partido."""
+    fake_yolo.set_script([players_row(2)])
+    analyzer.process_frame(green_frame, timestamp=0.0)
+    analyzer.update_name("1", "Ana")
+    estado = analyzer.serialize_state()
+    estado["model_path"] = "pesos-que-ya-no-existen.pt"
+
+    restaurado = FootballAnalyzer({"tracker_type": "simple", "detection_mode": "normal"})
+    restaurado.load_state(estado)
+
+    assert restaurado.model_path == "yolo11x.pt"          # conserva el detector vigente
+    assert restaurado.config["model_path"] == restaurado.model_path
+    assert restaurado.player_names == {"1": "Ana"}

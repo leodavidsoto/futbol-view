@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from fcopilot.config import default_runtime_config, merge_config
-from fcopilot.detection import Detector
+from fcopilot.detection import Detector, DetectorUnavailable
 from fcopilot.geometry import find_homography, perspective_transform_point
 from fcopilot.kinematics import KinematicsConfig, PlayerKinematics, Sample
 from fcopilot.osnet import OSNetTeamClassifier
@@ -657,9 +657,19 @@ class FootballAnalyzer:
     def load_state(self, data: Dict[str, Any]) -> None:
         with self.state_lock:
             self.config = merge_config(default_runtime_config(), data.get("config"))
-            self.model_path = str(data.get("model_path", self.config["model_path"]))
+            saved_model = str(data.get("model_path", self.config["model_path"]))
+            try:
+                self.detector = Detector({**self.config, "model_path": saved_model})
+                self.model_path = saved_model
+            except DetectorUnavailable:
+                # Los pesos que usaba la sesión ya no están: se conserva el
+                # detector vigente y se restaura el resto (nombres, equipos,
+                # métricas) en vez de perder el partido entero.
+                logger.warning(
+                    "El modelo guardado (%s) no esta disponible; se mantiene %s",
+                    saved_model, self.model_path,
+                )
             self.config["model_path"] = self.model_path
-            self.detector = Detector(self.config)
             self._init_tracker()
             self.team_clf = make_team_classifier(self.config["team_classifier"], self.config["osnet_weight_path"])
             self.pixels_per_meter = float(data.get("pixels_per_meter", 8.0))
