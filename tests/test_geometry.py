@@ -5,7 +5,6 @@ import pytest
 
 from fcopilot.geometry import (
     CalibrationError,
-    euclidean,
     find_homography,
     perspective_transform_point,
     polygon_area,
@@ -84,9 +83,6 @@ def test_area_de_poligono():
     assert polygon_area([[0, 0], [4, 0], [4, 3], [0, 3]]) == pytest.approx(12.0)
     assert polygon_area([[0, 0], [1, 1]]) == 0.0
 
-
-def test_distancia_euclidea():
-    assert euclidean((0, 0), (3, 4)) == pytest.approx(5.0)
 
 
 def test_la_homografia_esta_normalizada():

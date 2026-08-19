@@ -2,7 +2,7 @@
 
 import pytest
 
-from fcopilot.possession import PossessionTracker, possession_timeline
+from fcopilot.possession import PossessionTracker
 
 JUGADORES = [
     {"team": "team_1", "center": [100, 100], "world_pos": [10.0, 10.0]},
@@ -112,10 +112,3 @@ def test_snapshot_y_serializacion():
 def test_confirm_frames_invalido():
     with pytest.raises(ValueError):
         PossessionTracker(confirm_frames=0)
-
-
-def test_timeline_agrupa_tramos():
-    eventos = [(0.0, "team_1"), (0.5, "team_1"), (1.0, "team_2"), (1.5, "team_1")]
-    timeline = possession_timeline(eventos)
-    assert [t["team"] for t in timeline] == ["team_1", "team_2", "team_1"]
-    assert timeline[0]["start"] == 0.0 and timeline[0]["end"] == 0.5

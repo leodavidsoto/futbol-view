@@ -43,10 +43,6 @@ export function fmtDistance(meters) {
   return value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${Math.round(value)} m`;
 }
 
-export function fmtSpeed(kmh) {
-  return `${(Number(kmh) || 0).toFixed(1)} km/h`;
-}
-
 /** Zonas de intensidad; deben coincidir con `fcopilot.kinematics.SPEED_ZONES`. */
 export const SPEED_ZONES = [
   { name: "caminando", min: 0, max: 7, color: "#4a90d9" },
@@ -64,11 +60,4 @@ export function speedZone(kmh) {
 /** Color según la intensidad de carrera, para pintar el número de velocidad. */
 export function speedColor(kmh) {
   return speedZone(kmh).color;
-}
-
-/** Porcentaje acotado a [0, 100], listo para un ancho CSS. */
-export function pct(value) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(100, Math.max(0, n));
 }

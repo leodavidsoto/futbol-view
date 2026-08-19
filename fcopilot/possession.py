@@ -17,7 +17,7 @@ están a la misma distancia.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 TEAM_1 = "team_1"
 TEAM_2 = "team_2"
@@ -136,14 +136,3 @@ class PossessionTracker:
         obj.holder = str(state.get("holder", NONE))
         obj.changes = int(state.get("changes", 0))
         return obj
-
-
-def possession_timeline(events: List[Tuple[float, str]]) -> List[Dict[str, object]]:
-    """Comprime ``(t, equipo)`` en tramos continuos de posesión."""
-    timeline: List[Dict[str, object]] = []
-    for t, team in events:
-        if timeline and timeline[-1]["team"] == team:
-            timeline[-1]["end"] = round(t, 2)
-        else:
-            timeline.append({"team": team, "start": round(t, 2), "end": round(t, 2)})
-    return timeline

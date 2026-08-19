@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   SPEED_ZONES,
   fmtDistance,
-  fmtSpeed,
   fmtTime,
   hexToRgba,
-  pct,
   speedColor,
   speedZone,
   teamColor,
@@ -61,10 +59,6 @@ describe("fmtDistance", () => {
 });
 
 describe("velocidad", () => {
-  it("formatea con un decimal", () => {
-    expect(fmtSpeed(23.456)).toBe("23.5 km/h");
-  });
-
   it.each([
     [3, "caminando"],
     [10, "trote"],
@@ -98,14 +92,5 @@ describe("teamColor", () => {
   it("usa el color neutro para lo demás", () => {
     expect(teamColor("unknown")).toBe("#aaaaaa");
     expect(teamColor(undefined)).toBe("#aaaaaa");
-  });
-});
-
-describe("pct", () => {
-  it("acota al rango 0-100", () => {
-    expect(pct(-20)).toBe(0);
-    expect(pct(150)).toBe(100);
-    expect(pct(42.5)).toBe(42.5);
-    expect(pct("nada")).toBe(0);
   });
 });

@@ -8,9 +8,6 @@ from typing import Any, Dict, Iterable, Optional, Tuple
 PERSON_CLASS = 0        # COCO: person
 BALL_CLASS = 32         # COCO: sports ball
 
-FIELD_W_METERS = 105.0  # largo del campo (eje x del mundo)
-FIELD_H_METERS = 68.0   # ancho del campo (eje y del mundo)
-
 ALLOWED_TRACKERS: frozenset = frozenset({"bytetrack", "norfair", "simple"})
 ALLOWED_DET_MODES: frozenset = frozenset({"normal", "sahi"})
 ALLOWED_TEAM_CLFS: frozenset = frozenset({"kmeans", "grass_kmeans", "osnet"})

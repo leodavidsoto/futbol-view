@@ -2,18 +2,16 @@
 
 import pytest
 
-from fcopilot.tracking import SimpleCentroidTracker, bbox_center, iou
+from fcopilot.tracking import SimpleCentroidTracker, bbox_center
 
 
 def box(x, y, w=20, h=40):
     return [x, y, x + w, y + h]
 
 
-def test_centro_e_iou():
+def test_centro_de_la_caja():
     assert bbox_center([0, 0, 10, 20]) == (5.0, 10.0)
-    assert iou([0, 0, 10, 10], [0, 0, 10, 10]) == pytest.approx(1.0)
-    assert iou([0, 0, 10, 10], [20, 20, 30, 30]) == 0.0
-    assert iou([0, 0, 10, 10], [5, 0, 15, 10]) == pytest.approx(1 / 3)
+    assert bbox_center([10, 10, 20, 20]) == (15.0, 15.0)
 
 
 def test_las_identidades_se_mantienen_entre_frames():

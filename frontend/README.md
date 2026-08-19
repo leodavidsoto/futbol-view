@@ -25,9 +25,16 @@ VITE_API_URL=http://localhost:8000
 VITE_WS_URL=ws://localhost:8000
 ```
 
+## Estructura
+
+- `src/App.jsx` — componente principal: canvas, overlays e interacción.
+- `src/lib/` — lógica sin DOM (formato, búfer de frames, sesión, cliente HTTP),
+  que es lo que cubren los tests.
+
 ## Verificación
 
 ```bash
 npm run lint
+npm test
 npm run build
 ```

@@ -19,19 +19,6 @@ def bbox_center(bbox: BBox) -> Tuple[float, float]:
     return (float(bbox[0]) + float(bbox[2])) / 2.0, (float(bbox[1]) + float(bbox[3])) / 2.0
 
 
-def iou(a: BBox, b: BBox) -> float:
-    """Intersección sobre unión de dos cajas ``[x1, y1, x2, y2]``."""
-    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
-    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
-    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    if inter <= 0:
-        return 0.0
-    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
-    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
-    union = area_a + area_b - inter
-    return float(inter / union) if union > 0 else 0.0
-
-
 class _Track:
     __slots__ = ("track_id", "cx", "cy", "vx", "vy", "bbox", "missing", "hits")
 

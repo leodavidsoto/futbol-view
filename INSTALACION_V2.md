@@ -65,10 +65,6 @@ VITE_API_URL=http://mi-servidor:8000
 VITE_WS_URL=ws://mi-servidor:8000
 ```
 
-> La interfaz activa es `frontend/src/App.jsx`. El fichero `FootballCopilot_v2.jsx`
-> de la raíz es una versión anterior que se conserva como referencia histórica y
-> no forma parte de la aplicación.
-
 ---
 
 ## 4. Usar el sistema

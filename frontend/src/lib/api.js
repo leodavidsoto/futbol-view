@@ -56,23 +56,18 @@ export async function apiFetch(path, { method = "GET", body, signal, json = true
 }
 
 export const api = {
-  health: () => apiFetch("/health"),
   getConfig: () => apiFetch("/api/config"),
   setConfig: (patch) => apiFetch("/api/config", { method: "POST", body: patch }),
   setPlayerName: (trackId, name) =>
     apiFetch("/api/player-name", { method: "POST", body: { track_id: String(trackId), name } }),
   setPlayerTeam: (trackId, team) =>
     apiFetch("/api/player-team", { method: "POST", body: { track_id: String(trackId), team } }),
-  calibrateScale: (pixelsPerMeter) =>
-    apiFetch("/api/calibrate", { method: "POST", body: { pixels_per_meter: pixelsPerMeter } }),
   calibrateHomography: (imgPoints, worldPoints) =>
     apiFetch("/api/calibrate", {
       method: "POST",
       body: { img_points: imgPoints, world_points: worldPoints },
     }),
   getCalibration: () => apiFetch("/api/calibrate"),
-  clearCalibration: () => apiFetch("/api/calibrate", { method: "DELETE" }),
-  report: () => apiFetch("/api/report"),
   export: () => apiFetch("/api/export"),
   reset: (soft = false) => apiFetch(`/api/reset?soft=${soft ? "true" : "false"}`, { method: "POST" }),
   previewFrame: (blob, timestamp = 0) => {

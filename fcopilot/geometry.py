@@ -115,7 +115,3 @@ def perspective_transform_point(homography: Optional[np.ndarray], px: float, py:
         return None
     return x, y
 
-
-def euclidean(a: Sequence[float], b: Sequence[float]) -> float:
-    """Distancia euclídea entre dos puntos 2D."""
-    return float(np.hypot(a[0] - b[0], a[1] - b[1]))
