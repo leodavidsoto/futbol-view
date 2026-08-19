@@ -109,6 +109,12 @@ class LoadConfig:
     #: Ventana con la que se compara el final contra el resto para detectar
     #: caída de rendimiento.
     dropoff_window_s: float = 300.0
+    #: Tiempo observado mínimo para que una tasa **por minuto** signifique algo.
+    #: Sin esto, un jugador visto dos segundos que dio cuatro pasos aparece con
+    #: 130 m/min de alta intensidad y encabeza el ranking de intensidad — el
+    #: mismo ranking que existe precisamente para comparar esfuerzo con
+    #: justicia. Extrapolar un minuto a partir de dos segundos no es medir.
+    min_observed_s_for_rates: float = 30.0
 
     def __post_init__(self) -> None:
         if self.high_intensity_kmh <= 0:
@@ -123,6 +129,8 @@ class LoadConfig:
             raise ValueError("bucket_s debe ser > 0")
         if self.dropoff_window_s <= 0:
             raise ValueError("dropoff_window_s debe ser > 0")
+        if self.min_observed_s_for_rates < 0:
+            raise ValueError("min_observed_s_for_rates no puede ser negativo")
         for nombre, valor in (
             ("relative_high_pct", self.relative_high_pct),
             ("relative_sprint_pct", self.relative_sprint_pct),
@@ -434,11 +442,14 @@ class ExternalLoad:
     def summary(self) -> Dict[str, object]:
         """Resumen de carga, con las unidades escritas en el nombre de la clave."""
         observados = self.observed_seconds
-        minutos = observados / 60.0 if observados > 0 else 0.0
         total = self.total_distance_m
+        # `None` significa «no se puede extrapolar», que no es lo mismo que 0 ni
+        # que un número enorme. Quien ordene por esta clave tiene que tratarlo.
+        fiable = observados >= self.config.min_observed_s_for_rates
+        minutos = observados / 60.0 if fiable and observados > 0 else 0.0
 
-        def por_minuto(valor: float) -> float:
-            return round(valor / minutos, 1) if minutos > 0 else 0.0
+        def por_minuto(valor: float) -> Optional[float]:
+            return round(valor / minutos, 1) if minutos > 0 else None
 
         return {
             "total_dist_m": round(total, 1),

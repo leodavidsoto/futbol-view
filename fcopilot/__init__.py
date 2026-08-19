@@ -19,6 +19,7 @@ from fcopilot.config import (
     default_runtime_config,
     merge_config,
 )
+from fcopilot.dashboard import DashboardConfig, Quality, build_dashboard
 from fcopilot.geometry import (
     find_homography,
     perspective_transform_point,
@@ -66,8 +67,10 @@ __all__ = [
     "ALLOWED_TEAM_CLFS",
     "ALLOWED_TRACKERS",
     "band_for_speed",
+    "build_dashboard",
     "build_report",
     "ColorTeamClassifier",
+    "DashboardConfig",
     "DEFAULT_PITCH",
     "default_runtime_config",
     "DEFAULTS",
@@ -88,6 +91,7 @@ __all__ = [
     "PlayerKinematics",
     "PossessionTracker",
     "quad_is_degenerate",
+    "Quality",
     "Sample",
     "scaled_pitch",
     "SimpleCentroidTracker",

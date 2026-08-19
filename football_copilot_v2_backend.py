@@ -51,7 +51,9 @@ from fcopilot import __version__ as FCOPILOT_VERSION
 from fcopilot.analyzer import BYTETRACK_AVAILABLE, NORFAIR_AVAILABLE, FootballAnalyzer
 from fcopilot.config import ALLOWED_MANUAL_TEAMS, ConfigError, DEFAULTS, validate_config
 from fcopilot.detection import SAHI_AVAILABLE, YOLO_AVAILABLE, DetectorUnavailable, shared_yolo_registry
+from fcopilot.dashboard import DashboardConfig
 from fcopilot.geometry import CalibrationError, PlayAreaError
+from fcopilot.pitch import DEFAULT_PITCH, PITCHES, PitchError
 from fcopilot.osnet import TORCH_AVAILABLE, osnet_weights_available, shared_osnet_registry
 from fcopilot.sessions import SessionIdError, SessionLimitError, SessionManager, normalize_session_id
 
@@ -115,6 +117,21 @@ class CalibrationRequest(BaseModel):
     pixels_per_meter: Optional[float] = Field(default=None, gt=0, le=1000)
     img_points: Optional[List[List[float]]] = None
     world_points: Optional[List[List[float]]] = None
+
+
+class LandmarkCalibrationRequest(BaseModel):
+    """Calibración señalando puntos del campo **con nombre**, no coordenadas.
+
+    Es la diferencia entre pedirle al usuario que sepa cuánto mide su campo y
+    pedirle que señale la esquina. Los nombres válidos los sirve
+    ``GET /api/pitches``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    points: Dict[str, List[float]] = Field(
+        ..., description="nombre del punto de referencia → [x, y] en píxeles"
+    )
+    pitch: str = Field(default=DEFAULT_PITCH, max_length=64)
 
 
 class PlayAreaRequest(BaseModel):
@@ -437,6 +454,40 @@ def calibrate(data: CalibrationRequest, session_id: str = Depends(get_session_id
     return {"ok": True, "mode": "scale", "pixels_per_meter": analyzer.pixels_per_meter}
 
 
+@app.get("/api/pitches")
+def list_pitches():
+    """Campos disponibles con sus puntos de referencia, para poder señalarlos.
+
+    El cliente los necesita para dibujar dónde hay que hacer clic. Va sin
+    sesión porque es una tabla constante, no estado de nadie.
+    """
+    return {
+        "default": DEFAULT_PITCH,
+        "pitches": {nombre: campo.as_dict() for nombre, campo in PITCHES.items()},
+    }
+
+
+@app.post("/api/calibrate-landmarks")
+def calibrate_landmarks(
+    data: LandmarkCalibrationRequest, session_id: str = Depends(get_session_id)
+):
+    """Calibra con puntos del campo señalados por su nombre.
+
+    Acepta más de cuatro: con puntos que traen error —los de una persona
+    haciendo clic, o los de un modelo de registro de campo— resolver por
+    mínimos cuadrados sobre muchos da mejor resultado que exacto sobre cuatro.
+    """
+    analyzer = get_analyzer(session_id)
+    try:
+        resultado = analyzer.calibrate_from_landmarks(data.points, data.pitch)
+    except PitchError as exc:
+        raise _http(400, str(exc)) from exc
+    except CalibrationError as exc:
+        raise _http(400, str(exc)) from exc
+    save_session(session_id, analyzer)
+    return {"ok": True, "mode": "landmarks", **resultado}
+
+
 @app.get("/api/calibrate")
 def get_calibration(session_id: str = Depends(get_session_id)):
     analyzer = get_analyzer(session_id)
@@ -560,6 +611,26 @@ def export(session_id: str = Depends(get_session_id), include_positions: bool = 
 def report(session_id: str = Depends(get_session_id)):
     """Informe agregado sin el rastro de posiciones (ligero para la UI)."""
     return get_analyzer(session_id).get_export(include_positions=False)
+
+
+@app.get("/api/dashboard")
+def dashboard(
+    session_id: str = Depends(get_session_id),
+    merge: bool = True,
+):
+    """Panel de operación para el cuerpo técnico.
+
+    *merge* cose antes los trozos de trayectoria del mismo jugador. Viene
+    activado porque sin eso un jugador partido en tres aparece como tres
+    jugadores con un tercio de los metros cada uno. **Modifica el estado de la
+    sesión**, así que se puede desactivar con ``?merge=false`` para ver los
+    datos tal y como salieron del tracker.
+    """
+    analyzer = get_analyzer(session_id)
+    panel = analyzer.get_dashboard(merge=merge)
+    if merge:
+        save_session(session_id, analyzer)
+    return panel
 
 
 @app.post("/api/reset")

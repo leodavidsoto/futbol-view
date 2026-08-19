@@ -34,6 +34,20 @@ export const styles = {
   version: { color: "#444", fontSize: 11 },
   badge:   { padding: "2px 9px", borderRadius: 10, fontSize: 12 },
   fpsBadge:{ color: "#ffdd00", fontSize: 12, marginLeft: "auto", fontFamily: "monospace" },
+  viewTabs: {
+    display: "flex", gap: 4, padding: "0 18px", background: "#0d0d1a",
+    borderBottom: "1px solid #1a1a28",
+  },
+  viewTab: {
+    // Las propiedades del borde van sueltas y no como atajo `borderBottom`:
+    // React avisa —con razón— de que mezclar un atajo con una de sus partes en
+    // dos objetos que se funden deja el resultado a merced del orden de las
+    // claves, que no está garantizado.
+    padding: "8px 16px", background: "transparent", border: "none",
+    borderBottomWidth: 2, borderBottomStyle: "solid", borderBottomColor: "transparent",
+    color: "#778", cursor: "pointer", fontSize: 13, fontWeight: 600,
+  },
+  viewTabActive: { color: "#00ff88", borderBottomColor: "#00ff88" },
   body:    { display: "flex", flex: 1, overflow: "hidden" },
   canvasWrap: {
     flex: 1, position: "relative", background: "#050510",

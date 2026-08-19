@@ -203,3 +203,40 @@ def test_la_calibracion_da_el_mismo_resultado_en_cualquier_orden_de_clic():
 )
 def test_lo_que_si_es_degenerado_se_sigue_rechazando(puntos):
     assert quad_is_degenerate(puntos)
+
+
+def test_con_mas_de_cuatro_puntos_un_trio_alineado_no_invalida_el_conjunto():
+    """Se comprobaban sólo los cuatro PRIMEROS, y eso era arbitrario e incorrecto.
+
+    El punto central del campo está sobre la diagonal que une dos esquinas
+    opuestas. Señalar «esquina, esquina, centro» entre seis puntos perfectamente
+    resolubles por mínimos cuadrados tumbaba la calibración con un mensaje que
+    hablaba de puntos colineales y no decía cuáles ni qué hacer.
+    """
+    mundo = [
+        (0.0, 0.0), (105.0, 68.0), (105.0, 0.0),      # incluye el trío con el centro
+        (52.5, 34.0),                                  # centro: sobre las dos diagonales
+        (0.0, 68.0), (52.5, 0.0),
+    ]
+    H = np.array([[8.0, 1.5, 120.0], [0.0, 7.0, 60.0], [0.0, 0.004, 1.0]])
+
+    def proyectar(p):
+        v = H @ np.array([p[0], p[1], 1.0])
+        return (v[0] / v[2], v[1] / v[2])
+
+    imagen = [proyectar(p) for p in mundo]
+    recuperada = find_homography(imagen, mundo)
+
+    for px_py, esperado in zip(imagen, mundo):
+        salida = perspective_transform_point(recuperada, *px_py)
+        assert salida is not None
+        assert salida[0] == pytest.approx(esperado[0], abs=0.05)
+        assert salida[1] == pytest.approx(esperado[1], abs=0.05)
+
+
+def test_muchos_puntos_todos_sobre_una_recta_siguen_siendo_degenerados():
+    """Lo que impide resolver no es un trío alineado: es que no quede ninguno suelto."""
+    imagen = [(float(i) * 10.0, 100.0) for i in range(8)]
+    mundo = [(float(i) * 5.0, 0.0) for i in range(8)]
+    with pytest.raises(CalibrationError):
+        find_homography(imagen, mundo)

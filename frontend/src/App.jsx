@@ -31,6 +31,7 @@ import {
   ToggleRow,
 } from "./components/index.jsx";
 import { styles } from "./styles.js";
+import Dashboard from "./dashboard/Dashboard.jsx";
 
 // ─── CONFIG ────────────────────────────────────────────────────
 const FRAME_RATE_MS = 80;
@@ -47,6 +48,16 @@ function logClientError(scope, error) {
 
 // ─── MAIN COMPONENT ────────────────────────────────────────────
 export default function App() {
+  /**
+   * Qué vista se está mirando.
+   *
+   * `analisis` es la consola de siempre: cuarenta controles para afinar el
+   * sistema. `panel` es la vista de operación del cuerpo técnico, que no tiene
+   * ni un ajuste. Son públicos distintos y mezclarlos era lo que hacía que el
+   * panel no existiera: no hay hueco para una tabla de decisiones al lado de
+   * un slider de umbral de confianza.
+   */
+  const [view, setView] = useState("analisis");
   // ── Flujo ──────────────────────────────────────────────────
   const [mode, setMode]               = useState("video"); // "video"|"webcam"
   const [flowStep, setFlowStep]       = useState("idle");  // ver descripción arriba
@@ -647,6 +658,28 @@ export default function App() {
         </span>
       </div>
 
+      {/* ── Selector de vista ── */}
+      <div style={styles.viewTabs} role="tablist" aria-label="Vista">
+        {[
+          ["analisis", "🎛️ Análisis", "Consola completa: detección, seguimiento y ajustes"],
+          ["panel", "📋 Panel del DT", "Qué decidir: quién está fundido y quién no corre"],
+        ].map(([clave, etiqueta, ayuda]) => (
+          <button
+            key={clave}
+            role="tab"
+            aria-selected={view === clave}
+            title={ayuda}
+            onClick={() => setView(clave)}
+            style={{
+              ...styles.viewTab,
+              ...(view === clave ? styles.viewTabActive : null),
+            }}
+          >
+            {etiqueta}
+          </button>
+        ))}
+      </div>
+
       {/* ── Aviso de error del backend / análisis ── */}
       {notice && (
         <div style={styles.notice} role="alert">
@@ -659,7 +692,12 @@ export default function App() {
         </div>
       )}
 
-      <div style={styles.body}>
+      {view === "panel" && <Dashboard />}
+
+      {/* La consola se oculta, no se desmonta: desmontarla destruiría el
+          elemento de vídeo y cortaría el análisis en curso, así que cambiar de
+          pestaña a mitad de partido perdería el trabajo hecho. */}
+      <div style={{ ...styles.body, display: view === "panel" ? "none" : "flex" }}>
         {/* ── CANVAS AREA ── */}
         <div style={styles.canvasWrap}>
 

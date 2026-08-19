@@ -37,6 +37,8 @@ from fcopilot.kinematics import (
     TimeBaseError,
 )
 from fcopilot.osnet import OSNetTeamClassifier
+from fcopilot.dashboard import DashboardConfig, Quality, build_dashboard
+from fcopilot.pitch import DEFAULT_PITCH, PITCHES, PitchSpec, get_pitch, homography_from_landmarks
 from fcopilot.possession import PossessionTracker
 from fcopilot.report import build_report
 from fcopilot.teams import ColorTeamClassifier, GrassAwareTeamClassifier
@@ -119,6 +121,11 @@ class FootballAnalyzer:
         self.tracks: Dict[int, Dict[str, Any]] = {}
         #: Resumen de la última fusión de tracklets, o None si no se hizo.
         self.last_merge: Optional[Dict[str, Any]] = None
+        #: Frames analizados en los que se vio el balón. Es lo que permite
+        #: decir si la posesión se sostiene o es un adorno.
+        self.frames_with_ball = 0
+        #: Campo con el que se calibró, si se usó una plantilla.
+        self.pitch: Optional[PitchSpec] = None
         self.ball_positions: List[Dict[str, float]] = []
         self.ball_last_seen: Optional[int] = None
         self.possession = PossessionTracker()
@@ -597,6 +604,7 @@ class FootballAnalyzer:
             self.possession.update("none", dt)
             return None
 
+        self.frames_with_ball += 1
         bcx, bcy, bx1, by1, bx2, by2 = ball_info
         self.ball_positions.append({"frame": self.frame_count, "x": bcx, "y": bcy})
         if len(self.ball_positions) > MAX_TRACK_HISTORY:
@@ -671,9 +679,35 @@ class FootballAnalyzer:
             self.homography = homography
         logger.info("Homografia calibrada con %s puntos", len(list(img_points)))
 
+    def calibrate_from_landmarks(
+        self, image_points: Dict[str, Sequence[float]], pitch_name: str = DEFAULT_PITCH
+    ) -> Dict[str, Any]:
+        """Calibra señalando puntos del campo **con nombre**, no coordenadas.
+
+        Es la diferencia entre «haz clic en cuatro sitios y escribe cuánto miden
+        en metros» —que nadie hace— y «haz clic en la esquina y en el punto
+        central». Lanza :class:`PitchError` con un mensaje que dice qué señaló
+        mal quien llama.
+
+        Es además la puerta de entrada para calibrar de forma automática: un
+        modelo de registro de campo produce este mismo diccionario, y el resto
+        del sistema no distingue si lo señaló una persona o una red.
+        """
+        pitch = get_pitch(pitch_name)
+        homography = homography_from_landmarks(image_points, pitch)   # lanza PitchError
+        with self.state_lock:
+            self.homography = homography
+            self.pitch = pitch
+        logger.info(
+            "Homografia calibrada con %s puntos de referencia de %s",
+            len(image_points), pitch.name,
+        )
+        return {"pitch": pitch.name, "source": pitch.source, "points": len(image_points)}
+
     def clear_homography(self) -> None:
         with self.state_lock:
             self.homography = None
+            self.pitch = None
 
     def pixel_to_world(self, px: float, py: float) -> Optional[Tuple[float, float]]:
         return perspective_transform_point(self.homography, px, py)
@@ -694,6 +728,36 @@ class FootballAnalyzer:
                 time_source=self.time_source or TIME_SOURCE_VIDEO,
             )
 
+    def get_dashboard(
+        self, *, merge: bool = True, config: Optional[DashboardConfig] = None
+    ) -> Dict[str, Any]:
+        """Panel de operación para el cuerpo técnico.
+
+        *merge* cose antes los trozos de trayectoria, y viene activado porque
+        sin eso un jugador partido en tres aparece como tres jugadores con un
+        tercio de los metros cada uno — y el panel entero deja de servir. Es
+        una operación que **modifica el estado de la sesión**, así que se puede
+        desactivar para ver los datos crudos.
+        """
+        if merge:
+            self.merge_tracklets()
+        informe = self.get_export(include_positions=False)
+        with self.state_lock:
+            calidad = Quality(
+                calibrated=self.is_calibrated,
+                time_source=self.time_source or TIME_SOURCE_VIDEO,
+                players_tracked=len(self.tracks),
+                identities_before_merge=(
+                    (self.last_merge or {}).get("identities_before") if self.last_merge else None
+                ),
+                rejected_steps=int((informe.get("totals") or {}).get("rejected_steps", 0)),
+                frames_analyzed=self.frame_count,
+                frames_with_ball=self.frames_with_ball,
+                pitch_name=self.pitch.name if self.pitch else None,
+                pitch_source=self.pitch.source if self.pitch else None,
+            )
+        return build_dashboard(informe, calidad, config)
+
     def public_config(self) -> Dict[str, Any]:
         return {
             "model": self.model_path,
@@ -710,6 +774,7 @@ class FootballAnalyzer:
         self._init_tracker()
         self.tracks = {}
         self.last_merge = None
+        self.frames_with_ball = 0
         self.ball_positions = []
         self.ball_last_seen = None
         self.frame_count = 0
@@ -842,6 +907,11 @@ class FootballAnalyzer:
                 "pixels_per_meter": self.pixels_per_meter,
                 "possession": self.possession.to_state(),
                 "homography": self.homography.tolist() if self.homography is not None else None,
+                # Sin esto, una sesión restaurada conserva la homografía pero
+                # pierde el campo: el panel decía "calibrado" y "sin campo" a la
+                # vez, y las posiciones dejaban de poder situarse en un plano.
+                "pitch": self.pitch.name if self.pitch else None,
+                "frames_with_ball": self.frames_with_ball,
                 "elapsed_s": self.elapsed_s,
                 "last_t": self._last_t,
                 "time_source": self.time_source,
@@ -878,6 +948,11 @@ class FootballAnalyzer:
             self.possession = PossessionTracker.from_state(data.get("possession") or {})
             homography = data.get("homography")
             self.homography = np.asarray(homography, dtype=np.float64) if homography is not None else None
+            nombre_campo = data.get("pitch")
+            # Un campo guardado que ya no existe en la tabla no debe tumbar la
+            # restauración: se pierde la etiqueta, no la sesión.
+            self.pitch = PITCHES.get(nombre_campo) if nombre_campo else None
+            self.frames_with_ball = int(data.get("frames_with_ball", 0) or 0)
             self.elapsed_s = float(data.get("elapsed_s", 0.0))
             self._last_t = data.get("last_t")
             self._t_origin = 0.0 if self._last_t is not None else None

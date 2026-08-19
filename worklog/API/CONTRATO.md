@@ -1,6 +1,6 @@
 # Contrato de API
 
-**Versión:** 1 · **Publicado:** 2026-08-18 · **Estable desde:** 2026-08-18
+**Versión:** 2 · **Publicado:** 2026-08-19 · **Estable desde:** 2026-08-18
 
 Consume `NUCLEO` v1 y `PERCEPCION` v1. Es la frontera entre el mundo y el
 análisis.
@@ -43,6 +43,9 @@ que su autor se acuerde. La comparación es en tiempo constante.
 | `GET`/`POST`/`DELETE` | `/api/calibrate` | 4 puntos imagen + 4 mundo | homografía activa |
 | `GET`/`POST`/`DELETE` | `/api/play-area` | polígono de ≥3 vértices | zona de juego activa |
 | `GET` | `/api/report` | — | informe de `build_report` |
+| `GET` | `/api/dashboard` | `merge?` | panel de operación del cuerpo técnico |
+| `GET` | `/api/pitches` | — | campos disponibles y sus puntos de referencia |
+| `POST` | `/api/calibrate-landmarks` | puntos con **nombre** + campo | homografía activa |
 | `GET` | `/api/export` | `include_positions?` | informe, con posiciones crudas |
 | `POST` | `/api/reset` | `soft?` | estado reiniciado |
 | `POST` | `/api/preview-frame` | imagen | primer frame analizado |
@@ -86,6 +89,45 @@ Errores conocidos que llegan por esta vía: `"No se pudo abrir el video"`,
 el mensaje de `DetectorUnavailable`, y `"Fallo durante el analisis del video"`
 para cualquier fallo inesperado de decodificación.
 
+## `GET /api/dashboard`
+
+Lo que un director técnico lee, y nada más. **Empieza por si se puede creer a sí
+mismo:** `quality.confidence` vale `alta`, `media` o `baja`, y `quality.warnings`
+dice qué cifra concreta deja de valer y por qué. Con `baja`, el cliente debe
+ocultar el semáforo de sustituciones — las cifras siguen sirviendo para comparar
+jugadores entre sí, pero no para decidir.
+
+`merge=true` (por defecto) cose antes los trozos de trayectoria del mismo
+jugador. **Modifica el estado de la sesión**: los `track_id` absorbidos
+desaparecen. Con `merge=false` se ven los datos tal y como salieron del tracker,
+y el panel lo declara con el aviso `sin_fusion`.
+
+`thresholds` viaja con el resultado a propósito: los cortes del semáforo son
+heurísticos, no clínicos, y quien lea un «cambio» tiene derecho a saber con qué
+umbral se decidió.
+
+**`hi_m_per_min` y `dist_m_per_min` pueden ser `null`**, y no es lo mismo que 0:
+significa que el jugador se vio menos de `min_observed_s_for_rates` y extrapolar
+a un minuto sería inventar. Quien ordene por esas claves tiene que tratarlo — un
+`null` colado como 0 hunde la mediana del equipo y señala a medio equipo.
+
+## `POST /api/calibrate-landmarks`
+
+```json
+{"points": {"esquina_izq_arriba": [120, 340], "centro": [640, 400], "...": []},
+ "pitch": "futbol_11"}
+```
+
+Calibrar señalando puntos **con nombre**, no coordenadas en metros. Los nombres
+válidos los sirve `GET /api/pitches`. Admite más de cuatro: con puntos que traen
+error —los de una persona haciendo clic, o los de un modelo de registro de
+campo— resolver por mínimos cuadrados sobre muchos da mejor resultado que exacto
+sobre cuatro.
+
+Es también el punto de entrada para calibrar de forma automática: un modelo de
+registro de campo produce este mismo diccionario y la API no distingue el
+origen.
+
 ## Errores
 
 | Situación | Código | Qué debe hacer quien llama |
@@ -93,6 +135,8 @@ para cualquier fallo inesperado de decodificación.
 | `session_id` con formato inválido | 400 | Corregir el identificador; no reintentar igual |
 | Configuración fuera de rango o clave desconocida | 400 | Mostrar el mensaje: dice la clave y el rango |
 | Calibración degenerada (4 puntos colineales) | 400 | Pedir cuatro puntos que formen un cuadrilátero |
+| Punto de referencia con nombre desconocido | 400 | El mensaje lo nombra; los válidos están en `/api/pitches` |
+| Campo desconocido en `calibrate-landmarks` | 400 | El mensaje lista los disponibles |
 | Zona de juego con menos de 3 vértices | 422 | Es el esquema: un polígono necesita tres puntos |
 | Zona de juego degenerada (vértices alineados) | 400 | El mensaje lo dice; encerraría área cero y filtraría todo |
 | Modelo fuera de `MODEL_ROOT`, inexistente o que no es `.pt` | 400 | No reintentar: es una ruta prohibida a propósito |
@@ -161,6 +205,18 @@ medias.
 | `OPERACION` | La tabla de variables de entorno, los puertos y los límites |
 
 ## Cambios desde la versión anterior
+
+### v2 (2026-08-19)
+
+- **Añade:** `GET /api/dashboard`, `GET /api/pitches` y
+  `POST /api/calibrate-landmarks`.
+- **Añade:** `pitch` y `frames_with_ball` al estado serializado de la sesión.
+  Antes, una sesión restaurada conservaba la homografía y perdía el campo: el
+  panel decía «calibrado» y «sin campo» a la vez.
+- `/api/pitches` es la única ruta nueva sin `session_id`, y está justificada en
+  `RUTAS_SIN_SESION`: es una tabla constante y exigir sesión sería teatro.
+
+### v1 (2026-08-18)
 
 Primera publicación. Respecto del código previo:
 

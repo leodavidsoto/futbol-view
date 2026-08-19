@@ -140,16 +140,38 @@ def test_la_distancia_de_carga_y_la_de_cinematica_no_se_separan():
 
 
 def test_el_ranking_por_minuto_premia_al_que_mas_corre_no_al_que_mas_juega():
-    """Es la diferencia entre medir esfuerzo y medir permanencia."""
+    """Es la diferencia entre medir esfuerzo y medir permanencia.
+
+    Los dos jugadores están observados por encima del mínimo para extrapolar
+    (``min_observed_s_for_rates``) a propósito. La primera versión de esta
+    prueba usaba un «suplente» de ocho segundos, y ése no tiene tasa por minuto
+    en absoluto: extrapolar un minuto desde ocho segundos no es medir. Lo que
+    la prueba quiere comparar —ritmo frente a permanencia— sigue igual.
+    """
     from fcopilot.possession import PossessionTracker
 
     jugadores = {
-        1: _jugador_con_carga(1, "team_1", 16.0, pasos=300),   # mucho rato, ritmo bajo
-        2: _jugador_con_carga(2, "team_1", 24.0, pasos=40),    # poco rato, ritmo alto
+        1: _jugador_con_carga(1, "team_1", 16.0, pasos=500),   # 100 s, ritmo bajo
+        2: _jugador_con_carga(2, "team_1", 24.0, pasos=200),   # 40 s, ritmo alto
     }
     informe = build_report(jugadores, PossessionTracker(), include_positions=False)
     assert informe["leaderboards"]["distance"][0]["track_id"] == 1
     assert informe["leaderboards"]["intensity_per_min"][0]["track_id"] == 2
+
+
+def test_quien_se_vio_dos_segundos_no_entra_en_un_ranking_de_tasas():
+    """Ponerle un 0 sería injusto y ponerle su tasa cruda le haría el primero."""
+    from fcopilot.possession import PossessionTracker
+
+    jugadores = {
+        1: _jugador_con_carga(1, "team_1", 16.0, pasos=500),   # 100 s
+        2: _jugador_con_carga(2, "team_1", 30.0, pasos=10),    # 2 s a toda velocidad
+    }
+    informe = build_report(jugadores, PossessionTracker(), include_positions=False)
+    ranking = informe["leaderboards"]["intensity_per_min"]
+    assert [e["track_id"] for e in ranking] == [1]
+    # Pero sus metros, que sí se midieron, siguen contando en los totales.
+    assert informe["totals"]["total_dist_m"] > 0
 
 
 def test_un_equipo_sin_jugadores_da_ceros_y_no_revienta():

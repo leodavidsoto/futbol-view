@@ -603,3 +603,47 @@ def test_la_fusion_converge_si_se_repite():
 
     assert segunda["identities_after"] == primera["identities_after"]
     assert analyzer.tracks[1]["kinematics"].total_distance_m == pytest.approx(distancia)
+
+
+def test_una_sesion_restaurada_conserva_el_campo_no_solo_la_homografia():
+    """Decía «calibrado» y «sin campo» a la vez, que no puede ser las dos cosas.
+
+    La homografía se serializaba y el campo no, así que al reiniciar el backend
+    la sesión quedaba calibrada contra un plano cuyas dimensiones se habían
+    perdido: el panel no podía decir en qué campo se jugó ni si sus medidas eran
+    de reglamento.
+    """
+    import numpy as np
+
+    from fcopilot.pitch import PITCH_7
+
+    analyzer = FootballAnalyzer()
+    puntos = PITCH_7.keypoints()
+    H = np.array([[8.0, 1.5, 120.0], [0.0, 7.0, 60.0], [0.0, 0.004, 1.0]])
+
+    def proyectar(p):
+        v = H @ np.array([p[0], p[1], 1.0])
+        return [v[0] / v[2], v[1] / v[2]]
+
+    nombres = ["esquina_izq_arriba", "esquina_der_abajo", "esquina_der_arriba", "esquina_izq_abajo"]
+    analyzer.calibrate_from_landmarks({n: proyectar(puntos[n]) for n in nombres}, "futbol_7")
+
+    restaurado = FootballAnalyzer()
+    restaurado.load_state(analyzer.serialize_state())
+
+    assert restaurado.is_calibrated
+    assert restaurado.pitch is not None
+    assert restaurado.pitch.name == "futbol_7"
+    assert restaurado.get_dashboard()["match"]["pitch"] == "futbol_7"
+
+
+def test_un_campo_guardado_que_ya_no_existe_no_tumba_la_restauracion():
+    """Se pierde la etiqueta, no la sesión entera."""
+    analyzer = FootballAnalyzer()
+    estado = analyzer.serialize_state()
+    estado["pitch"] = "futbol_marciano"
+
+    restaurado = FootballAnalyzer()
+    restaurado.load_state(estado)
+
+    assert restaurado.pitch is None

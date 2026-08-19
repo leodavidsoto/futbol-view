@@ -4,7 +4,7 @@
 |---|---|
 | **Estado** | LISTO_PARA_REVISION |
 | **Último agente** | claude (turno 1 de PERCEPCION) |
-| **Última actualización** | 2026-08-18T23:25:00Z |
+| **Última actualización** | 2026-08-19T21:40:00Z |
 | **Contrato publicado** | sí — `worklog/PERCEPCION/CONTRATO.md` v1 |
 | **Depende de** | `NUCLEO` (contrato v1 **publicado**); `PLATAFORMA` para cerrar |
 | **Requisitos asignados** | R-01, R-02, R-03, R-16 |
@@ -31,6 +31,25 @@ Y en este turno:
 - **Cruce de jugadores**: cuatro pruebas que fijan que dos jugadores que se
   superponen conservan identidad, no generan saltos rechazados y no cambian de
   equipo.
+
+### Turno de la fusión de tracklets
+
+El tracker producía **51 identidades para unos 22 jugadores** en el partido real.
+`fcopilot/tracklets.py` cose los trozos con tres filtros —tiempo, física y
+apariencia— que hay que pasar todos, igual que el post-proceso del pipeline
+ganador de SoccerNet GSR.
+
+Lo delicado no se ve: al coser **no se calcula ningún tramo entre los dos
+trozos**. Un hueco de 2 s con 15 m son 27 km/h, por debajo del filtro de saltos
+imposibles: se colarían sin que nada los delatara.
+
+Un fallo grave encontrado escribiéndolo: el coste normalizaba la distancia por
+un radio que crece con el hueco, así que **saltarse un trozo salía más barato
+que unirse al de al lado**. Con cuatro trozos consecutivos producía 1→3 y 2→4:
+dos jugadores donde había uno, con la mitad de los metros cada uno.
+
+Los tres clasificadores exponen ahora `describe()`. El analizador acumula una
+media incremental por track —no una lista, que crecería sin tope—.
 
 ## Qué falta
 
@@ -59,6 +78,15 @@ Ninguno tiene todavía prueba que lo fije.
 3. Las líneas 44-180 de `osnet.py` —la red en sí— sólo se ejecutan con `torch`
    instalado. Es la excepción de cobertura declarada; el resto del módulo ya se
    prueba con embeddings sintéticos.
+
+### Lo que sigue sin resolver aquí
+
+- **El balón.** Sigue siendo el techo: a esta distancia son cuatro píxeles y ni
+  YOLO ni el modelo de fútbol lo ven de forma fiable. La vía es inferencia por
+  teselas específica de balón (la pieza SAHI ya está, pensada para personas) o
+  un modelo dedicado. Ver `INVESTIGACION.md` §4.
+- **La apariencia sin `torch` es el color del kit**, que distingue entre equipos
+  y no entre compañeros. Filtra fusiones absurdas; no resuelve las difíciles.
 
 ## Bloqueos activos
 

@@ -159,14 +159,37 @@ def test_finalize_cierra_el_sprint_con_el_que_termina_el_partido():
 # ── Normalización, que es lo que hace comparables a dos jugadores ───────
 def test_los_metros_por_minuto_no_penalizan_al_suplente():
     """Un jugador que entra 10 minutos corre menos y no por eso corre peor."""
-    titular = alimentar(ExternalLoad(), [18.0] * 300)     # 60 s observados
-    suplente = alimentar(ExternalLoad(), [18.0] * 75)     # 15 s observados
+    titular = alimentar(ExternalLoad(), [18.0] * 3000)    # 600 s observados
+    suplente = alimentar(ExternalLoad(), [18.0] * 500)    # 100 s observados
     titular.finalize()
     suplente.finalize()
     assert titular.summary()["total_dist_m"] > suplente.summary()["total_dist_m"]
     assert titular.summary()["per_minute"]["dist_m"] == pytest.approx(
         suplente.summary()["per_minute"]["dist_m"], rel=0.05
     )
+
+
+def test_dos_segundos_de_jugador_no_dan_una_tasa_por_minuto():
+    """Extrapolar un minuto a partir de dos segundos no es medir, es inventar.
+
+    Se vio al ejecutarlo con material real: un jugador visto 0,0 minutos
+    encabezaba el ranking de intensidad con 130 m/min — el mismo ranking que
+    existe precisamente para comparar esfuerzo con justicia. `None` dice «no se
+    puede extrapolar», que no es 0 ni es un número enorme.
+    """
+    fugaz = alimentar(ExternalLoad(), [20.0] * 10, dt=0.2)    # 2 s observados
+    fugaz.finalize()
+    resumen = fugaz.summary()
+    assert resumen["per_minute"]["dist_m"] is None
+    assert resumen["per_minute"]["high_intensity_m"] is None
+    # Lo que sí se midió no se pierde: los metros recorridos son ciertos.
+    assert resumen["total_dist_m"] > 0
+
+
+def test_el_minimo_para_extrapolar_es_configurable():
+    corto = alimentar(ExternalLoad(LoadConfig(min_observed_s_for_rates=1.0)), [20.0] * 10, dt=0.2)
+    corto.finalize()
+    assert corto.summary()["per_minute"]["dist_m"] is not None
 
 
 def test_las_bandas_suman_la_distancia_total():
@@ -365,4 +388,4 @@ def test_un_jugador_nunca_visto_no_tiene_perfil_ni_caida():
     carga = ExternalLoad()
     assert carga.profile() == []
     assert carga.dropoff() is None
-    assert carga.summary()["per_minute"]["dist_m"] == 0.0
+    assert carga.summary()["per_minute"]["dist_m"] is None

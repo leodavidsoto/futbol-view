@@ -106,7 +106,21 @@ def find_homography(img_points: Iterable[Point], world_points: Iterable[Point]) 
     dst = _as_points(world_points, "world_points")
     if src.shape[0] != dst.shape[0]:
         raise CalibrationError("img_points y world_points deben tener el mismo tamano")
-    if quad_is_degenerate(src[:4]):
+    # Con exactamente cuatro correspondencias, la solución es exacta y basta con
+    # comprobar que ningún trío esté alineado. Con más, comprobar sólo los
+    # cuatro PRIMEROS sería arbitrario y además incorrecto: da igual en qué
+    # orden lleguen, y un conjunto perfectamente resoluble por mínimos
+    # cuadrados se rechazaba porque los cuatro primeros incluían un trío
+    # alineado. Pasaba de verdad — el punto central del campo está sobre la
+    # diagonal que une dos esquinas opuestas, así que señalar «esquina, esquina,
+    # centro» tumbaba la calibración con un mensaje que no explicaba nada.
+    # Para N > 4, lo que hay que comprobar es que **exista** algún cuarteto en
+    # posición general, y eso lo dice el rango de las coordenadas centradas más
+    # la condición de la homografía resultante.
+    if src.shape[0] == 4:
+        if quad_is_degenerate(src):
+            raise CalibrationError("los puntos de imagen son degenerados (colineales o repetidos)")
+    elif _all_collinear(src) or _all_collinear(dst):
         raise CalibrationError("los puntos de imagen son degenerados (colineales o repetidos)")
 
     norm_src, t_src = _normalize(src)
@@ -125,7 +139,32 @@ def find_homography(img_points: Iterable[Point], world_points: Iterable[Point]) 
     homography = homography / homography[2, 2]
     if not np.isfinite(homography).all():
         raise CalibrationError("homografia degenerada")
+    # Última defensa, y la única que vale para cualquier número de puntos: una
+    # homografía tiene que ser invertible. Si el determinante se va a cero, los
+    # puntos no determinaban una transformación aunque pasaran los filtros
+    # geométricos de antes.
+    if abs(float(np.linalg.det(homography))) < 1e-9:
+        raise CalibrationError(
+            "los puntos no determinan una homografia invertible: estan casi alineados"
+        )
     return homography
+
+
+def _all_collinear(points: np.ndarray, tol: float = 1e-6) -> bool:
+    """¿Están **todos** los puntos sobre una misma recta?
+
+    Distinto de ``quad_is_degenerate``, que exige que ningún trío lo esté. Con
+    más de cuatro correspondencias, un trío alineado no impide resolver: lo que
+    lo impide es que no quede ningún cuarteto en posición general, y eso ocurre
+    justamente cuando todos caen en una recta.
+    """
+    if points.shape[0] < 3:
+        return True
+    centrados = points - points.mean(axis=0)
+    valores = np.linalg.svd(centrados, compute_uv=False)
+    if valores[0] < tol:
+        return True                       # todos en el mismo sitio
+    return bool(valores[1] / valores[0] < tol)
 
 
 def perspective_transform_point(homography: Optional[np.ndarray], px: float, py: float) -> Optional[Tuple[float, float]]:

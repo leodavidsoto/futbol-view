@@ -324,6 +324,10 @@ RUTAS_SIN_SESION = {
     "/health": "sonda de vida; acepta session_id opcional pero no lo exige",
     "/api/sessions": "lista las sesiones; es administración, no acceso a una",
     "/api/sessions/{session_id}": "el id va en la ruta, que es su propia frontera",
+    "/api/pitches": (
+        "tabla constante de dimensiones de campo; no lee ni escribe estado de "
+        "ninguna sesión, así que exigir un session_id sería teatro"
+    ),
 }
 
 
@@ -606,3 +610,123 @@ def test_el_websocket_rechaza_antes_de_crear_la_sesion(client, con_credencial, m
 def test_el_websocket_acepta_con_credencial(client, con_credencial):
     with client.websocket_connect(f"/ws/stream?session_id=ok&api_key={con_credencial}") as ws:
         ws.close()
+
+
+# ── Campos y calibración por puntos con nombre ──────────────────────────
+def _puntos_de_calibracion(client, pitch="futbol_11", nombres=None):
+    """Proyecta puntos de referencia del campo a una imagen sintética."""
+    import numpy as np
+
+    kp = client.get("/api/pitches").json()["pitches"][pitch]["keypoints"]
+    H = np.array([[8.0, 1.5, 120.0], [0.0, 7.0, 60.0], [0.0, 0.004, 1.0]])
+
+    def proyectar(p):
+        v = H @ np.array([p[0], p[1], 1.0])
+        return [v[0] / v[2], v[1] / v[2]]
+
+    nombres = nombres or [
+        "esquina_izq_arriba", "esquina_der_abajo", "esquina_der_arriba",
+        "esquina_izq_abajo", "centro", "medio_arriba",
+    ]
+    return {n: proyectar(kp[n]) for n in nombres}
+
+
+def test_los_campos_disponibles_traen_sus_puntos_de_referencia(client):
+    """El cliente los necesita para dibujar dónde hay que hacer clic."""
+    datos = client.get("/api/pitches").json()
+    assert datos["default"] == "futbol_11"
+    assert set(datos["pitches"]) >= {"futbol_11", "futbol_7", "futbol_sala"}
+    once = datos["pitches"]["futbol_11"]
+    assert once["source"] == "reglamento"
+    assert len(once["keypoints"]) >= 30
+    assert "centro" in once["keypoints"]
+
+
+def test_calibrar_señalando_nombres_no_pide_saber_cuanto_mide_el_campo(client):
+    respuesta = client.post(
+        "/api/calibrate-landmarks",
+        json={"points": _puntos_de_calibracion(client), "pitch": "futbol_11"},
+    )
+    assert respuesta.status_code == 200
+    cuerpo = respuesta.json()
+    assert cuerpo["mode"] == "landmarks"
+    assert cuerpo["pitch"] == "futbol_11"
+    assert client.get("/api/calibrate").json()["calibrated"] is True
+
+
+def test_calibrar_admite_mas_de_cuatro_puntos_incluido_el_centro(client):
+    """El centro está sobre las diagonales; con seis puntos eso no debe estorbar."""
+    respuesta = client.post(
+        "/api/calibrate-landmarks", json={"points": _puntos_de_calibracion(client)}
+    )
+    assert respuesta.status_code == 200
+    assert respuesta.json()["points"] == 6
+
+
+def test_un_punto_de_referencia_inventado_es_400_y_dice_cual(client):
+    respuesta = client.post(
+        "/api/calibrate-landmarks",
+        json={"points": {"banderin_de_corner": [1, 2], "centro": [3, 4],
+                         "medio_arriba": [5, 6], "medio_abajo": [7, 8]}},
+    )
+    assert respuesta.status_code == 400
+    assert "banderin_de_corner" in respuesta.json()["detail"]
+
+
+def test_calibrar_con_menos_de_cuatro_puntos_es_400(client):
+    respuesta = client.post(
+        "/api/calibrate-landmarks",
+        json={"points": {"centro": [1, 2], "medio_arriba": [3, 4], "medio_abajo": [5, 6]}},
+    )
+    assert respuesta.status_code == 400
+
+
+def test_un_campo_desconocido_es_400_y_dice_cuales_hay(client):
+    respuesta = client.post(
+        "/api/calibrate-landmarks",
+        json={"points": _puntos_de_calibracion(client), "pitch": "futbol_playa"},
+    )
+    assert respuesta.status_code == 400
+    assert "futbol_11" in respuesta.json()["detail"]
+
+
+def test_una_clave_de_mas_en_la_calibracion_se_rechaza(client):
+    """`extra="forbid"`: una clave que la API ignora en silencio es una trampa."""
+    respuesta = client.post(
+        "/api/calibrate-landmarks",
+        json={"points": _puntos_de_calibracion(client), "escala": 3},
+    )
+    assert respuesta.status_code == 422
+
+
+# ── El panel ────────────────────────────────────────────────────────────
+def test_el_panel_avisa_antes_de_enseñar_cifras(client):
+    """Sin calibración las cifras siguen saliendo, y ya no son metros."""
+    panel = client.get("/api/dashboard").json()
+    assert panel["quality"]["confidence"] == "baja"
+    assert "sin_calibrar" in [a["code"] for a in panel["quality"]["warnings"]]
+    assert panel["thresholds"]["dropoff_substitute_pct"] == -25.0
+
+
+def test_el_panel_sube_la_confianza_al_calibrar(client):
+    client.post("/api/calibrate-landmarks", json={"points": _puntos_de_calibracion(client)})
+    panel = client.get("/api/dashboard").json()
+    assert panel["quality"]["calibrated"] is True
+    assert panel["match"]["pitch"] == "futbol_11"
+    assert "sin_calibrar" not in [a["code"] for a in panel["quality"]["warnings"]]
+
+
+def test_el_panel_sin_fusionar_lo_declara(client):
+    """`?merge=false` enseña los datos crudos, y el panel dice que lo son."""
+    panel = client.get("/api/dashboard", params={"merge": "false"}).json()
+    assert "sin_fusion" in [a["code"] for a in panel["quality"]["warnings"]]
+
+
+def test_el_panel_trae_lo_que_un_dt_lee_y_no_mas(client):
+    panel = client.get("/api/dashboard").json()
+    assert set(panel) >= {
+        "match", "quality", "possession", "teams", "attention", "players",
+        "leaderboards", "thresholds",
+    }
+    # Y el aviso de que los umbrales no son ciencia viaja con el resultado.
+    assert "no sustituye" in panel["thresholds"]["note"].lower()

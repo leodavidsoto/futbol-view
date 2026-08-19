@@ -36,6 +36,7 @@ MINIMOS: Dict[str, Tuple[int, str]] = {
     "fcopilot/pitch.py": (95, ""),
     "fcopilot/possession.py": (95, ""),
     "fcopilot/report.py": (95, ""),
+    "fcopilot/dashboard.py": (95, ""),
     "fcopilot/geometry.py": (90, ""),
     "fcopilot/tracking.py": (95, ""),
     "fcopilot/tracklets.py": (95, ""),

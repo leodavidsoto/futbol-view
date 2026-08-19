@@ -36,6 +36,12 @@ def _carga(entry: Mapping[str, Any], clave: str) -> float:
     return float((entry.get("load") or {}).get(clave, 0.0) or 0.0)
 
 
+def _tasa(entry: Mapping[str, Any], clave: str) -> Optional[float]:
+    """Tasa por minuto de un jugador, o ``None`` si no es fiable."""
+    valor = ((entry.get("load") or {}).get("per_minute") or {}).get(clave)
+    return None if valor is None else float(valor)
+
+
 def _ranking(entries: Iterable[Dict[str, Any]], clave) -> List[Dict[str, Any]]:
     """Los diez primeros por *clave*, en el formato común de los rankings."""
     ordenados = sorted(entries, key=clave, reverse=True)[:10]
@@ -135,8 +141,11 @@ def build_report(
             # Metros por minuto observado: es el único ranking en el que un
             # suplente que entró diez minutos puede aparecer por delante de un
             # titular, y por eso es el que compara esfuerzo y no permanencia.
+            # Sólo entra quien tiene una tasa fiable: el núcleo devuelve `None`
+            # para quien se vio demasiado poco como para extrapolar a un minuto.
             "intensity_per_min": _ranking(
-                entries, lambda e: float((e.get("load") or {}).get("per_minute", {}).get("high_intensity_m", 0.0))
+                [e for e in entries if _tasa(e, "high_intensity_m") is not None],
+                lambda e: _tasa(e, "high_intensity_m") or 0.0,
             ),
             "accelerations": _ranking(
                 entries, lambda e: _carga(e, "accelerations") + _carga(e, "decelerations")

@@ -4,7 +4,7 @@
 |---|---|
 | **Estado** | LISTO_PARA_REVISION |
 | **Último agente** | claude (turno 1 de API) |
-| **Última actualización** | 2026-08-19T06:05:00Z |
+| **Última actualización** | 2026-08-19T21:40:00Z |
 | **Contrato publicado** | sí — `worklog/API/CONTRATO.md` v1 |
 | **Depende de** | `NUCLEO` v1 y `PERCEPCION` v1 (ambos **publicados**); `PLATAFORMA` para cerrar |
 | **Requisitos asignados** | R-08, R-10, R-13, R-15, R-17, R-19, R-21, R-24, R-25, R-27, R-28 |
@@ -54,6 +54,19 @@ Y en el turno 2, con un vídeo real de un usuario:
   lista de excepciones que exige motivo escrito. Delató una segunda:
   `osnet_weight_path`, que se deja fuera **a propósito** —es una ruta a un
   `.pth`, que es un pickle, y no tiene un `validate_model_path` equivalente—.
+
+### Turno del panel y la calibración por nombres
+
+- **`GET /api/dashboard`**: lo que un DT lee, empezando por si se puede creer.
+- **`POST /api/calibrate-landmarks`** y **`GET /api/pitches`**: calibrar
+  señalando «la esquina», no escribiendo metros. Es también el punto de entrada
+  para calibrar de forma automática con un modelo de registro de campo.
+- **Corregido:** una sesión restaurada conservaba la homografía y perdía el
+  campo, así que el panel decía «calibrado» y «sin campo» a la vez.
+
+El guardia de aislamiento de sesión cazó `/api/pitches` en cuanto se añadió, y
+obligó a justificar la excepción por escrito en `RUTAS_SIN_SESION`. Funcionó
+exactamente como estaba pensado.
 
 ## Qué falta
 
