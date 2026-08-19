@@ -115,6 +115,19 @@ esa URL con `cv2.VideoCapture` en el backend.
 
 ## 5. Calibración del campo
 
+> **Lo más rápido: señalar puntos con nombre.** Antes había que saber cuánto
+> mide tu campo y escribir cuatro pares de coordenadas en metros; ahora eliges
+> la plantilla (`futbol_11`, `futbol_7`, `futbol_sala`) y señalas puntos que
+> reconoces —la esquina, el punto central, el frontal del área—. `GET
+> /api/pitches` lista los ~33 puntos de cada campo. Admite más de cuatro, y con
+> más sale mejor: los puntos de un clic traen error y los mínimos cuadrados lo
+> absorben.
+>
+> Las medidas del campo de 11 son de reglamento. **Las de fútbol 7 y sala
+> varían por federación**: las de la plantilla son las más habituales, no una
+> verdad. Si conoces las tuyas, dilas — el informe marca de dónde salen.
+
+
 **Recomendado:** homografía de 4 puntos desde la interfaz
 (**🏟️ Calibrar campo**). Marca las esquinas en orden — superior izquierda,
 superior derecha, inferior derecha, inferior izquierda — y las posiciones pasan
@@ -277,6 +290,88 @@ curl -s localhost:8000/api/report -H 'x-session-id: demo'
 
 En CPU tarda alrededor de un segundo por frame analizado con `yolo11x`; con
 `yolo11n` va mucho más rápido y detecta algo peor.
+
+---
+
+## 9 ter. Probarlo en tu máquina, de principio a fin
+
+Lo que sigue está ejecutado, no supuesto. En un portátil sin GPU, `yolo11x`
+tarda alrededor de un segundo por frame analizado: con `frame_skip` 4 eso son
+unos 5 minutos por cada minuto de vídeo.
+
+```bash
+git clone https://github.com/leodavidsoto/futbol-view
+cd futbol-view
+git checkout claude/futbol-core-metrics-refactor-497jvn
+
+python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements_v2.txt
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # opcional, sólo OSNet
+
+python3 scripts/fetch_weights.py --dest ./weights   # descarga y VERIFICA el hash
+python3 football_copilot_v2_backend.py              # → http://localhost:8000
+```
+
+En otra terminal:
+
+```bash
+cd frontend && npm install && npm run dev           # → http://localhost:5173
+```
+
+### Sin vídeo propio a mano
+
+```bash
+python3 scripts/make_demo_video.py --salida demo.mp4 --segundos 10
+```
+
+No es un partido: es una panorámica sobre una fotografía real. Sirve para ver
+que la tubería funciona, no para creerse las métricas.
+
+### La configuración que dio buenos resultados con material real
+
+En **🎛️ Análisis**, o por API. Lo importante es la resolución: con los valores
+por defecto (854×480) los jugadores de una toma elevada desaparecen antes de
+llegar al detector.
+
+```json
+{"detection_mode": "normal", "tracker_type": "norfair", "norfair_dist": 70,
+ "confidence": 0.20, "imgsz": 1280, "frame_skip": 4,
+ "process_width": 1280, "process_height": 720}
+```
+
+Si va demasiado lento, baja `imgsz` a 960 y sube `frame_skip`. Si no detecta
+nada, baja `confidence` antes que ninguna otra cosa.
+
+> **Un modelo específico de fútbol cambia mucho el resultado** en tomas
+> elevadas, mucho más que cualquier ajuste. El que se probó aquí es un `.pt` de
+> terceros de HuggingFace (`mobadam/football-player-detection`), y **cargar un
+> `.pt` ejecuta su código**: no está versionado ni tiene hash fijado en
+> `scripts/weights.sha256.json`. Es una decisión tuya, no un paso de la
+> instalación. Si lo usas, sus clases son `person_class: 1` y `ball_class: 0`.
+
+### El recorrido corto para ver el panel
+
+1. Sube el vídeo y pulsa **Detectar aquí** en un segundo con jugadores.
+2. **Calibra** con la plantilla de tu campo (§5). Si no calibras, el panel te lo
+   dirá y ocultará el semáforo — está pensado así.
+3. Si jugáis en **media cancha**, dibuja la zona de juego: descarta lo que se
+   detecte fuera antes de seguirlo.
+4. **Iniciar análisis**.
+5. Pestaña **📋 Panel del DT**.
+
+### Qué esperar la primera vez, y qué no
+
+- **La posesión probablemente saldrá pobre.** El balón a esa distancia son
+  cuatro píxeles y ningún modelo probado lo ve de forma fiable. El panel te dirá
+  en qué porcentaje de frames se vio y avisará de que la posesión es
+  orientativa. Es la limitación conocida, no un fallo de instalación.
+- **La caída de rendimiento necesita minutos.** Por debajo de 15 minutos
+  jugados no se juzga a nadie, y las tasas por minuto sólo aparecen a partir de
+  30 segundos observados por jugador: extrapolar un minuto desde dos segundos
+  no es medir. Con un clip corto verás «—», y es lo correcto.
+- **Con CPU, el seguimiento fragmenta.** El panel lo mide y te lo dice como
+  «identidades por jugador». La fusión de tracklets corrige buena parte; si el
+  número sigue alto, las cifras de equipo valen y las individuales no.
 
 ---
 
