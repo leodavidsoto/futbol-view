@@ -42,7 +42,12 @@ services:
       args:
         # Vacía = rutas relativas al mismo origen, que es lo que sirve nginx.
         VITE_API_URL: ""
-        VITE_API_KEY: "${API_KEY:-}"
+        # VITE_API_KEY se deja DELIBERADAMENTE sin pasar: Vite hornea sus
+        # variables en el bundle, así que meter aquí la credencial del servidor
+        # la publica a cualquiera que abra el JS y anula la autenticación que
+        # este mismo fichero pide activar. Si el cliente tiene que enviar una
+        # credencial, que sea una distinta y de sólo cliente, o que nginx la
+        # inyecte en la petición y nunca viaje al navegador.
     ports:
       - "${WEB_PORT:-8080}:80"
     depends_on:

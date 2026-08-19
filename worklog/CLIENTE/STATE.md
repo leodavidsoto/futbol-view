@@ -53,6 +53,16 @@ Falta lo más grande, y no se hizo por una razón, no por tiempo:
 3. **Pruebas de componente.** Las 115 siguen siendo de módulo: ninguna monta un
    componente. Falta `@testing-library/react` en las dependencias.
 
+### De la revisión cruzada de código (2026-08-19)
+
+4. **El POST de calibración se dispara dentro del actualizador de
+   `setCalibPoints`**, así que con StrictMode se envía dos veces en desarrollo.
+5. **El modo webcam no funciona, y es anterior a todo este trabajo.**
+   `onPlay={() => mode === "ws" && startSendingFrames()}` nunca es cierto:
+   `mode` sólo vale `"video"` o `"webcam"`. Los frames de la cámara **no se
+   envían nunca**. El revisor no lo contó como hallazgo del diff por venir de
+   `main`, pero es un modo entero muerto.
+
 ## Bloqueos activos
 
 - ninguno. Lo que falta es trabajo, no espera.

@@ -609,20 +609,24 @@ async def preview_frame(
 @app.websocket("/ws/stream")
 async def ws_stream(ws: WebSocket):
     await ws.accept()
+
+    # La credencial se comprueba ANTES de tocar el gestor de sesiones. Al revés,
+    # una conexión sin credencial ya habría construido un FootballAnalyzer
+    # entero —modelo incluido— y, con MAX_SESSIONS al límite, desalojado la
+    # sesión de otro. El middleware HTTP no cubre WebSockets: aquí va a mano.
+    if API_KEY and not _credencial_valida(
+        ws.headers.get("x-api-key") or ws.query_params.get("api_key")
+    ):
+        await ws.send_text(json.dumps({"error": "credencial invalida o ausente"}))
+        await ws.close(code=1008)
+        return
+
     try:
         session_id = normalize_session_id(ws.query_params.get("session_id"))
         analyzer = session_manager.get(session_id)
     except (SessionIdError, SessionLimitError, DetectorUnavailable) as exc:
         await ws.send_text(json.dumps({"error": str(exc)}))
         await ws.close(code=1013)
-        return
-
-    if API_KEY and not _credencial_valida(
-        ws.headers.get("x-api-key") or ws.query_params.get("api_key")
-    ):
-        # El middleware HTTP no cubre WebSockets: aquí se comprueba a mano.
-        await ws.send_text(json.dumps({"error": "credencial invalida o ausente"}))
-        await ws.close(code=1008)
         return
 
     lease = f"{session_id}:websocket"

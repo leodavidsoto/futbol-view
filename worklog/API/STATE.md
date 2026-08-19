@@ -57,7 +57,24 @@ Y en el turno 2, con un vídeo real de un usuario:
 
 ## Qué falta
 
-1. **Verificación cruzada** (`revisar-carril`) por un agente que no sea este.
+### De la revisión cruzada de código (2026-08-19)
+
+1. **`TimeBaseError` no se maneja en ninguna ruta.** Tras analizar un vídeo en
+   una sesión, abrir el WebSocket en **esa misma sesión** lanza en el primer
+   frame —vídeo y reloj no se mezclan, y eso es correcto— pero el socket se
+   cierra sin decir nada y, como el estado se persiste, la sesión queda rota
+   para siempre. Capturarlo y responder algo accionable.
+2. **`/health?session_id=mal!id` devuelve 500.** `SessionIdError` no se captura
+   en la única ruta abierta sin credencial. Debe ser 400.
+3. **Carrera al guardar** (`sessions.py:68`): dos `save()` concurrentes de la
+   misma sesión escriben el mismo `.gz.tmp`. El publicado puede quedar corrupto
+   y la sesión restaura vacía en silencio. El temporal necesita sufijo único.
+
+Ninguno tiene todavía prueba que lo fije: escribirla es parte del trabajo.
+
+### Lo de siempre
+
+4. **Verificación cruzada** (`revisar-carril`) por un agente que no sea este.
 2. **A-01 sigue sin responder.** La credencial existe y viene apagada: encenderla
    es una variable de entorno, no un desarrollo. Lo que **no** está resuelto es
    que `session_id` siga sin ser identidad: dos clientes con la misma credencial

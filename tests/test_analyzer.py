@@ -478,3 +478,18 @@ def test_la_zona_sobrevive_a_la_serializacion(analyzer, fake_yolo, green_frame):
     revivido.load_state(analyzer.serialize_state())
     assert revivido.play_area == CAMPO_IMG
     assert revivido.discarded_outside == analyzer.discarded_outside
+
+
+def test_stats_no_repite_claves(analyzer, fake_yolo, green_frame):
+    """`play_area` viaja como booleano, no como el polígono entero.
+
+    Hubo un par de claves duplicadas en el diccionario: la primera emitía el
+    polígono crudo y la segunda la sobrescribía. Funcionaba por accidente —en
+    un literal gana la última— pero publicaba la geometría del campo en cada
+    frame del stream.
+    """
+    analyzer.set_play_area(CAMPO_IMG)
+    salida = correr(analyzer, fake_yolo, [[_en(400, 300)]], frames=3, dt=0.1)
+    stats = salida[-1]["stats"]
+    assert stats["play_area"] is True
+    assert not isinstance(stats["play_area"], list)

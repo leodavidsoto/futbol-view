@@ -585,3 +585,24 @@ def test_la_zona_es_por_sesion(client):
     client.post("/api/play-area", json={"points": CAMPO_TRAPECIO}, headers={"x-session-id": "partido-a"})
     ajena = client.get("/api/play-area", headers={"x-session-id": "partido-b"}).json()
     assert ajena["defined"] is False
+
+
+def test_el_websocket_rechaza_antes_de_crear_la_sesion(client, con_credencial, monkeypatch):
+    """Sin esto, una conexión sin credencial construye un analizador entero
+    —modelo incluido— y, con MAX_SESSIONS al límite, desaloja la sesión de otro.
+    """
+    creadas = []
+    original = client.session_manager.get
+    monkeypatch.setattr(
+        client.session_manager, "get",
+        lambda sid, *a, **k: (creadas.append(sid), original(sid, *a, **k))[1],
+    )
+    with client.websocket_connect("/ws/stream?session_id=intruso") as ws:
+        mensaje = json.loads(ws.receive_text())
+    assert "credencial" in mensaje["error"]
+    assert creadas == [], f"se creó la sesión {creadas} antes de comprobar la credencial"
+
+
+def test_el_websocket_acepta_con_credencial(client, con_credencial):
+    with client.websocket_connect(f"/ws/stream?session_id=ok&api_key={con_credencial}") as ws:
+        ws.close()

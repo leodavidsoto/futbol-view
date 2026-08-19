@@ -34,7 +34,25 @@ Y en este turno:
 
 ## Qué falta
 
-1. **Verificación cruzada** (`revisar-carril`) por un agente que no sea este.
+### De la revisión cruzada de código (2026-08-19)
+
+1. **`apply_config` reinicia el tracker sin limpiar `self.tracks`.** Los IDs
+   vuelven a empezar en 1, así que un jugador nuevo hereda la cinemática, el
+   nombre y el equipo de otro. Es de los que producen datos plausibles y falsos,
+   que son los peores.
+2. **`load_state` fija `_t_origin = 0.0`.** Una sesión de webcam restaurada
+   calcula `t = time.monotonic()` y suma de golpe el tiempo de arranque de la
+   máquina a los segundos de posesión y al tiempo activo.
+3. **`teams._fit_features` sólo reinicia `_since_fit` al tener éxito.** Si los
+   centroides se quedan más cerca que `min_separation`, se lanza un KMeans
+   completo en **cada** `predict()` —unas 22 por frame— y `_features` crece sin
+   límite.
+
+Ninguno tiene todavía prueba que lo fije.
+
+### Lo de siempre
+
+4. **Verificación cruzada** (`revisar-carril`) por un agente que no sea este.
 2. `resolve_tracker_type` sigue degradando en silencio (ver notas). El valor
    efectivo viaja en `stats.tracker`, pero nadie avisa al usuario de que pidió
    Norfair y le dieron el tracker de centroides.

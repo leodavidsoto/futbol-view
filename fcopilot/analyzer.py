@@ -392,8 +392,6 @@ class FootballAnalyzer:
                     "calibrated": self.is_calibrated,
                     "elapsed_s": round(t, 2),
                     "time_source": self.time_source,
-                "play_area": self.play_area,
-                "discarded_outside": self.discarded_outside,
                     "play_area": bool(self.play_area),
                     "discarded_outside": self.discarded_outside,
                 },
