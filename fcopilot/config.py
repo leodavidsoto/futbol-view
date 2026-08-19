@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 # ── Constantes de dominio ────────────────────────────────────────────────
+# Índices de clase por defecto, los de COCO. Un modelo entrenado para fútbol
+# usa los suyos —normalmente `ball`, `player`, `referee`, `goalkeeper`— así que
+# son configurables por sesión: sin eso, la app sólo puede usar modelos COCO, y
+# los modelos específicos de fútbol son justamente los que funcionan en tomas
+# elevadas donde los jugadores ocupan pocos píxeles.
 PERSON_CLASS = 0        # COCO: person
 BALL_CLASS = 32         # COCO: sports ball
 
@@ -37,6 +42,8 @@ DEFAULTS: Dict[str, Any] = {
     "frame_skip": 2,
     "process_width": 854,
     "process_height": 480,
+    "person_class": PERSON_CLASS,
+    "ball_class": BALL_CLASS,
 }
 
 #: Rango admitido para las claves numéricas: clave → (mínimo, máximo, tipo).
@@ -51,6 +58,10 @@ _NUMERIC_BOUNDS: Dict[str, Tuple[float, float, type]] = {
     "frame_skip": (0, 30, int),
     "process_width": (320, 1920, int),
     "process_height": (180, 1080, int),
+    # Un modelo puede tener cualquier número de clases; el rango sólo evita
+    # valores absurdos.
+    "person_class": (0, 999, int),
+    "ball_class": (0, 999, int),
 }
 
 _ENUM_FIELDS: Dict[str, Iterable[str]] = {

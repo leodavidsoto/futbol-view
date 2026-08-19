@@ -141,6 +141,9 @@ class ConfigRequest(BaseModel):
     # jugadores ocupan pocos píxeles— esa reducción se come las detecciones.
     process_width: Optional[int] = None
     process_height: Optional[int] = None
+    # Un modelo de fútbol no usa los índices de COCO.
+    person_class: Optional[int] = None
+    ball_class: Optional[int] = None
 
     def to_patch(self) -> Dict[str, Any]:
         payload = self.model_dump(exclude_none=True)
@@ -472,6 +475,8 @@ def get_config(session_id: str = Depends(get_session_id)):
         "frame_skip": config["frame_skip"],
         "process_width": config["process_width"],
         "process_height": config["process_height"],
+        "person_class": config["person_class"],
+        "ball_class": config["ball_class"],
     }
 
 

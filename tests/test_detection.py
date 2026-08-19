@@ -140,3 +140,63 @@ def test_sin_ultralytics_el_error_sale_al_usar_no_al_importar(monkeypatch):
 def test_el_registro_vacio_no_conoce_ningun_modelo():
     registro = SharedYOLORegistry()
     assert registro.stats() == {"shared_yolo_models": 0}
+
+
+# ── Índices de clase configurables ──────────────────────────────────────
+#
+# Un modelo entrenado para fútbol no usa los índices de COCO: trae sus propias
+# clases (`ball`, `player`, `referee`, `goalkeeper`). Con los índices fijos en
+# el código, la app sólo podía usar modelos COCO — que son justamente los que
+# fallan en tomas elevadas donde los jugadores ocupan pocos píxeles.
+
+CLASES_FUTBOL = {"ball": 0, "goalkeeper": 1, "player": 2, "referee": 3}
+
+
+def test_reparte_con_los_indices_de_un_modelo_de_futbol():
+    personas, confs, balones = split_by_class(
+        [
+            ((0, 0, 10, 20), 0.9, CLASES_FUTBOL["player"]),
+            ((5, 5, 12, 12), 0.5, CLASES_FUTBOL["ball"]),
+            ((1, 1, 9, 19), 0.7, CLASES_FUTBOL["referee"]),
+        ],
+        person_class=CLASES_FUTBOL["player"],
+        ball_class=CLASES_FUTBOL["ball"],
+    )
+    assert len(personas) == 1 and confs == [0.9]
+    assert len(balones) == 1
+    # El árbitro no es un jugador: con los índices de COCO habría entrado como
+    # persona y contaminado las métricas del partido.
+
+
+def test_por_defecto_siguen_siendo_los_de_coco():
+    personas, _, balones = split_by_class(
+        [((0, 0, 10, 20), 0.9, PERSON_CLASS), ((0, 0, 5, 5), 0.5, BALL_CLASS)]
+    )
+    assert len(personas) == 1 and len(balones) == 1
+
+
+def test_el_detector_pide_al_modelo_sus_propias_clases(fake_yolo, frame):
+    """Sin esto, se le piden a un modelo de fútbol las clases 0 y 32, y la 32 no
+    existe."""
+    fake_yolo.set_script([[]])
+    config = dict(CONFIG_NORMAL, person_class=CLASES_FUTBOL["player"], ball_class=CLASES_FUTBOL["ball"])
+    Detector(config).predict(frame)
+    assert sorted(fake_yolo.last_kwargs["classes"]) == [0, 2]
+
+
+def test_el_detector_reparte_segun_las_clases_configuradas(fake_yolo, frame):
+    fake_yolo.set_script([[
+        ((10, 10, 34, 70), 0.9, CLASES_FUTBOL["player"]),
+        ((100, 100, 112, 112), 0.6, CLASES_FUTBOL["ball"]),
+    ]])
+    config = dict(CONFIG_NORMAL, person_class=CLASES_FUTBOL["player"], ball_class=CLASES_FUTBOL["ball"])
+    personas, confs, balones = Detector(config).predict(frame)
+    assert confs == [0.9] and len(balones) == 1
+
+
+def test_un_detector_sin_las_claves_nuevas_no_se_rompe(fake_yolo, frame):
+    """Sesiones guardadas antes de que existieran estas claves."""
+    fake_yolo.set_script([[((10, 10, 34, 70), 0.9, PERSON_CLASS)]])
+    detector = Detector(dict(CONFIG_NORMAL))          # sin person_class ni ball_class
+    assert (detector.person_class, detector.ball_class) == (PERSON_CLASS, BALL_CLASS)
+    assert len(detector.predict(frame)[0]) == 1

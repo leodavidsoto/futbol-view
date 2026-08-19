@@ -85,18 +85,25 @@ shared_yolo_registry = SharedYOLORegistry()
 
 
 def split_by_class(
-    boxes: Sequence[Tuple[Sequence[float], float, int]]
+    boxes: Sequence[Tuple[Sequence[float], float, int]],
+    person_class: int = PERSON_CLASS,
+    ball_class: int = BALL_CLASS,
 ) -> DetectionResult:
-    """Reparte ``(xyxy, conf, clase)`` en personas y candidatos a balón."""
+    """Reparte ``(xyxy, conf, clase)`` en personas y candidatos a balón.
+
+    Los índices son parámetros porque no todos los modelos usan los de COCO: uno
+    entrenado para fútbol suele traer `ball`, `player`, `referee`, `goalkeeper`
+    con sus propios números.
+    """
     person_xyxy: List[np.ndarray] = []
     person_conf: List[float] = []
     ball: List[Tuple[np.ndarray, float]] = []
     for xyxy, conf, cls in boxes:
         arr = np.asarray(xyxy, dtype=float)
-        if int(cls) == PERSON_CLASS:
+        if int(cls) == person_class:
             person_xyxy.append(arr)
             person_conf.append(float(conf))
-        elif int(cls) == BALL_CLASS:
+        elif int(cls) == ball_class:
             ball.append((arr, float(conf)))
     return person_xyxy, person_conf, ball
 
@@ -108,6 +115,8 @@ class Detector:
         self.config = config
         self.model_path = str(config["model_path"])
         self.model = shared_yolo_registry.get(self.model_path)
+        self.person_class = int(config.get("person_class", PERSON_CLASS))
+        self.ball_class = int(config.get("ball_class", BALL_CLASS))
         self.sahi_model = None
         self._init_sahi()
 
@@ -147,7 +156,7 @@ class Detector:
             frame,
             conf=float(self.config["confidence"]),
             iou=float(self.config["iou"]),
-            classes=[PERSON_CLASS, BALL_CLASS],
+            classes=[self.person_class, self.ball_class],
             imgsz=int(self.config["imgsz"]),
             augment=bool(self.config["augment"]),
             agnostic_nms=bool(self.config["agnostic_nms"]),
@@ -157,7 +166,7 @@ class Detector:
             (box.xyxy[0].cpu().numpy(), float(box.conf[0]), int(box.cls[0]))
             for box in results.boxes
         ]
-        return split_by_class(boxes)
+        return split_by_class(boxes, self.person_class, self.ball_class)
 
     def predict_sahi(self, frame: np.ndarray) -> DetectionResult:
         if not self.sahi_ready:
@@ -182,4 +191,4 @@ class Detector:
             )
             for pred in result.object_prediction_list
         ]
-        return split_by_class(boxes)
+        return split_by_class(boxes, self.person_class, self.ball_class)
