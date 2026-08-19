@@ -125,3 +125,24 @@ def test_el_filtro_de_cesped_cambia_las_features():
     # El tono medido por la variante grass-aware está más cerca del azul real.
     azul_hsv = cv2.cvtColor(np.uint8([[AZUL]]), cv2.COLOR_BGR2HSV)[0, 0].astype(float)
     assert abs(grass[0] - azul_hsv[0]) < abs(base[0] - azul_hsv[0])
+
+
+def test_el_buffer_de_muestras_esta_acotado():
+    """Un partido completo no puede acumular muestras sin límite."""
+    frame, azules, rojos = escena()
+    clf = ColorTeamClassifier(min_samples=8)
+    clf.max_features = 40
+    for _ in range(30):
+        for i, caja in enumerate(azules + rojos):
+            clf.predict(frame, caja, track_id=i)
+    assert clf.sample_count == 40
+    assert clf.is_fitted   # sigue clasificando con la ventana reciente
+
+
+def test_fit_tambien_respeta_el_limite():
+    frame, azules, rojos = escena()
+    clf = GrassAwareTeamClassifier(min_samples=8)
+    clf.max_features = 20
+    for _ in range(10):
+        clf.fit(frame, azules + rojos)
+    assert clf.sample_count == 20

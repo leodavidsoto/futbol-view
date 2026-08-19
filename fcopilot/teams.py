@@ -67,6 +67,10 @@ class ColorTeamClassifier:
 
     name = "kmeans"
 
+    #: Muestras que se conservan para reajustar. Acotado: un partido entero
+    #: genera cientos de miles de observaciones y antes se guardaban todas.
+    max_features = 1200
+
     def __init__(self, min_samples: int = 24, vote_window: int = 15, refit_every: int = 120):
         self.min_samples = max(4, int(min_samples))
         self.refit_every = max(1, int(refit_every))
@@ -116,12 +120,17 @@ class ColorTeamClassifier:
         self.is_fitted = True
         self._since_fit = 0
 
+    def _remember(self, features: np.ndarray) -> None:
+        self._features.append(features)
+        if len(self._features) > self.max_features:
+            del self._features[: len(self._features) - self.max_features]
+
     def fit(self, frame: np.ndarray, bboxes: Sequence[BBox]) -> None:
         """Acumula las cajas de un frame y reajusta si hay muestras suficientes."""
         for bbox in bboxes:
             features = self._extract_features(frame, bbox)
             if features is not None:
-                self._features.append(features)
+                self._remember(features)
         self._fit_features()
 
     def _raw_label(self, features: np.ndarray) -> str:
@@ -133,7 +142,7 @@ class ColorTeamClassifier:
         features = self._extract_features(frame, bbox)
         if features is None:
             return self._vote(track_id)
-        self._features.append(features)
+        self._remember(features)
         self._since_fit += 1
 
         if not self.is_fitted:

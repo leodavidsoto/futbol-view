@@ -216,3 +216,58 @@ def test_sin_detector_falla_al_construir():
         pytest.skip("ultralytics instalado: el registro cargaria el modelo real")
     with pytest.raises(DetectorUnavailable):
         FootballAnalyzer({"tracker_type": "simple"})
+
+
+def _fake_track(analyzer, tid, *, samples, last_seen):
+    """Inserta un track sintético para probar la poda sin gastar 400 frames."""
+    from fcopilot.kinematics import PlayerKinematics, Sample
+
+    kin = PlayerKinematics(tid, analyzer.kin_config)
+    for i in range(samples):
+        kin.update(Sample(frame=i, t=i * 0.1, x=float(i), y=0.0))
+    analyzer.tracks[tid] = {
+        "name": f"#{tid}",
+        "team": "unknown",
+        "kinematics": kin,
+        "last_seen_frame": last_seen,
+    }
+
+
+def test_poda_de_tracks_fantasma(analyzer):
+    from fcopilot.analyzer import GHOST_STALE_FRAMES
+
+    analyzer.frame_count = 1000
+    viejo = 1000 - GHOST_STALE_FRAMES - 10
+    _fake_track(analyzer, 1, samples=1, last_seen=viejo)       # fantasma
+    _fake_track(analyzer, 2, samples=2, last_seen=viejo)       # fantasma
+    _fake_track(analyzer, 3, samples=50, last_seen=viejo)      # jugador real que ya no está
+    _fake_track(analyzer, 4, samples=1, last_seen=999)         # recién aparecido
+
+    assert analyzer._prune_ghost_tracks() == 2
+    assert set(analyzer.tracks) == {3, 4}
+
+
+def test_la_poda_respeta_las_asignaciones_manuales(analyzer):
+    from fcopilot.analyzer import GHOST_STALE_FRAMES
+
+    analyzer.frame_count = 1000
+    viejo = 1000 - GHOST_STALE_FRAMES - 10
+    _fake_track(analyzer, 1, samples=1, last_seen=viejo)
+    _fake_track(analyzer, 2, samples=1, last_seen=viejo)
+    analyzer.update_name("1", "El portero")
+    analyzer.update_team("2", "team_2")
+
+    assert analyzer._prune_ghost_tracks() == 0
+    assert set(analyzer.tracks) == {1, 2}
+
+
+def test_la_poda_se_ejecuta_durante_el_analisis(analyzer, fake_yolo, green_frame, monkeypatch):
+    import fcopilot.analyzer as mod
+
+    monkeypatch.setattr(mod, "PRUNE_EVERY_FRAMES", 5)
+    llamadas = []
+    original = analyzer._prune_ghost_tracks
+    monkeypatch.setattr(analyzer, "_prune_ghost_tracks", lambda: llamadas.append(1) or original())
+
+    correr(analyzer, fake_yolo, [players_row(2) for _ in range(12)], frames=12, dt=0.1)
+    assert len(llamadas) == 2   # frames 5 y 10

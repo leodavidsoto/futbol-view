@@ -38,6 +38,14 @@ POSSESSION_DIST_M = 3.0
 FPS_TARGET = 20
 MAX_TRACK_HISTORY = 300
 
+#: Poda de tracks fantasma. Un tracker en tomas aéreas crea cientos de
+#: identidades de un par de frames (reflejos, público, falsos positivos): sin
+#: podarlas, la memoria crece durante todo el partido y el informe cuenta como
+#: "jugadores" cosas que nunca lo fueron.
+GHOST_MIN_SAMPLES = 3        # observaciones mínimas para considerarlo un jugador
+GHOST_STALE_FRAMES = 300     # frames sin verlo antes de descartarlo
+PRUNE_EVERY_FRAMES = 120
+
 try:
     from norfair import Detection as NorfairDetection, Tracker as NorfairTracker
 
@@ -283,6 +291,9 @@ class FootballAnalyzer:
             ]
             classify_ms = (time.perf_counter() - classify_start) * 1000
 
+            if self.frame_count % PRUNE_EVERY_FRAMES == 0:
+                self._prune_ghost_tracks()
+
             ball_start = time.perf_counter()
             ball_out = self._process_ball(ball_candidates, players_out, dt)
             ball_ms = (time.perf_counter() - ball_start) * 1000
@@ -366,6 +377,26 @@ class FootballAnalyzer:
             "sprints": kin.sprints,
             "trail": kin.trail(20),
         }
+
+    def _prune_ghost_tracks(self) -> int:
+        """Descarta identidades efímeras que ya no volverán a aparecer.
+
+        Nunca toca un track al que el usuario haya puesto nombre o equipo: esa
+        asignación manual es la señal más fiable de que es un jugador real.
+        """
+        doomed = []
+        for tid, track in self.tracks.items():
+            key = str(tid)
+            if key in self.player_names or key in self.player_teams:
+                continue
+            stale = self.frame_count - track.get("last_seen_frame", 0)
+            if stale > GHOST_STALE_FRAMES and len(track["kinematics"].samples) < GHOST_MIN_SAMPLES:
+                doomed.append(tid)
+        for tid in doomed:
+            del self.tracks[tid]
+        if doomed:
+            logger.debug("Podados %s tracks fantasma", len(doomed))
+        return len(doomed)
 
     def _process_ball(self, ball_candidates, players_out, dt: float) -> Optional[Dict[str, Any]]:
         ball_info = self._track_ball(ball_candidates)
