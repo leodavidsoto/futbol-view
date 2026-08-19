@@ -135,6 +135,12 @@ class ConfigRequest(BaseModel):
     norfair_hit_max: Optional[int] = None
     team_classifier: Optional[str] = None
     frame_skip: Optional[int] = None
+    # Resolución a la que se analiza. Estaban en los defaults y validados en
+    # `fcopilot.config`, pero no en este esquema, así que la API los rechazaba y
+    # nadie podía salir de 854x480. En tomas elevadas y anchas —donde los
+    # jugadores ocupan pocos píxeles— esa reducción se come las detecciones.
+    process_width: Optional[int] = None
+    process_height: Optional[int] = None
 
     def to_patch(self) -> Dict[str, Any]:
         payload = self.model_dump(exclude_none=True)
@@ -464,6 +470,8 @@ def get_config(session_id: str = Depends(get_session_id)):
         "osnet_weight_path": config["osnet_weight_path"],
         "osnet_available": osnet_weights_available(config["osnet_weight_path"]),
         "frame_skip": config["frame_skip"],
+        "process_width": config["process_width"],
+        "process_height": config["process_height"],
     }
 
 

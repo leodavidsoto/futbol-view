@@ -4,7 +4,7 @@
 |---|---|
 | **Estado** | LISTO_PARA_REVISION |
 | **Último agente** | claude (turno 1 de API) |
-| **Última actualización** | 2026-08-18T23:40:00Z |
+| **Última actualización** | 2026-08-19T06:05:00Z |
 | **Contrato publicado** | sí — `worklog/API/CONTRATO.md` v1 |
 | **Depende de** | `NUCLEO` v1 y `PERCEPCION` v1 (ambos **publicados**); `PLATAFORMA` para cerrar |
 | **Requisitos asignados** | R-08, R-10, R-13, R-15, R-17, R-19, R-21, R-24, R-25, R-27, R-28 |
@@ -40,6 +40,21 @@ Y en este turno:
 - `limits` en `/health`, para que `CLIENTE` y `OPERACION` lean los topes en vez
   de suponerlos.
 
+Y en el turno 2, con un vídeo real de un usuario:
+
+- **`process_width`/`process_height` no se podían cambiar.** Estaban en
+  `DEFAULTS` y validados en `fcopilot/config.py`, pero faltaban en el esquema
+  `ConfigRequest`, así que la API los rechazaba con 422: en la práctica no
+  existían y nadie podía salir de 854×480. En una toma elevada y ancha —donde
+  los jugadores ocupan pocos píxeles— esa reducción se come las detecciones
+  antes de que el detector las vea. Expuestos en `POST` y en `GET /api/config`.
+- **Guardia para que no vuelva a pasar**:
+  `test_toda_clave_de_configuracion_es_alcanzable_desde_la_api` compara las
+  claves de `DEFAULTS` con los campos del esquema y falla si divergen, con una
+  lista de excepciones que exige motivo escrito. Delató una segunda:
+  `osnet_weight_path`, que se deja fuera **a propósito** —es una ruta a un
+  `.pth`, que es un pickle, y no tiene un `validate_model_path` equivalente—.
+
 ## Qué falta
 
 1. **Verificación cruzada** (`revisar-carril`) por un agente que no sea este.
@@ -68,6 +83,7 @@ Y en este turno:
 | 3 | La credencial se implementa **apagada** en vez de esperar a A-01 | Encenderla pasa a ser una variable de entorno en vez de un desarrollo. Esperar habría dejado el servicio sin ninguna defensa y con la ruta crítica parada | sí | Quitar `API_KEY` y volver al servicio abierto |
 | 4 | La credencial va por middleware, no por dependencia en cada ruta | Una ruta nueva queda protegida sin que su autor se acuerde: olvidarlo deja de ser posible | sí | Pasar a `Depends` por ruta y aceptar que se puede olvidar |
 | 5 | `/health` responde sin credencial | Una sonda de vida que exige credencial no sirve de sonda de vida | sí | Protegerla y usar otra vía para el *liveness* |
+| 7 | `osnet_weight_path` sigue sin exponerse por HTTP | Es una ruta a un `.pth`, que es un pickle: cargarlo ejecuta código. `model_path` se expone porque pasa por `validate_model_path`; esta no tiene equivalente, así que se configura por variable de entorno | sí, si se le escribe su validación | Añadirla a `ConfigRequest` con un validador propio |
 | 6 | El límite de análisis simultáneos es global, no por cliente | No hay identidad de cliente que usar como clave. Un límite global protege el disco y los hilos, que es el daño real | sí, cuando haya identidad | Añadir el límite por cliente cuando A-01 se responda |
 
 ## Solicitudes a otros carriles

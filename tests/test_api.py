@@ -475,3 +475,65 @@ def test_una_plaza_ocupada_se_devuelve_si_falla_la_subida(client, fake_yolo, mon
         headers={"x-session-id": "una"},
     )
     assert semaforo.acquire(blocking=False), "la plaza no se devolvió"
+
+
+# ── Resolución de análisis (R-21) ───────────────────────────────────────
+#
+# `process_width`/`process_height` estaban en los defaults y validados en
+# `fcopilot.config`, pero faltaban en el esquema de la API: el backend los
+# rechazaba con 422 y nadie podía salir de 854x480. En tomas elevadas y anchas,
+# donde los jugadores ocupan pocos píxeles, esa reducción se come las
+# detecciones antes de que el detector las vea.
+
+def test_la_resolucion_de_analisis_se_puede_cambiar(client):
+    respuesta = client.post("/api/config", json={"process_width": 1920, "process_height": 1080})
+    assert respuesta.status_code == 200, respuesta.text
+    config = client.get("/api/config").json()
+    assert config["process_width"] == 1920
+    assert config["process_height"] == 1080
+
+
+def test_una_resolucion_fuera_de_rango_se_rechaza(client):
+    assert client.post("/api/config", json={"process_width": 99}).status_code == 400
+    assert client.post("/api/config", json={"process_height": 4000}).status_code == 400
+
+
+#: Claves que a propósito NO se pueden cambiar por la API, cada una con su
+#: motivo en la misma línea. Una excepción sin motivo escrito es la forma en que
+#: esta comprobación se vacía con el tiempo.
+CLAVES_NO_EXPUESTAS = {
+    "osnet_weight_path": (
+        "es una ruta del sistema de ficheros a un .pth, que es un pickle: "
+        "cargarlo ejecuta código. `model_path` sí se expone porque pasa por "
+        "validate_model_path; esta no tiene equivalente, así que se configura "
+        "por variable de entorno y no por petición HTTP"
+    ),
+}
+
+
+def test_toda_clave_de_configuracion_es_alcanzable_desde_la_api():
+    """El esquema de la API y los defaults no pueden divergir en silencio.
+
+    Es el fallo que hubo con `process_width`/`process_height`: existían en los
+    defaults, se validaban en `fcopilot.config`, y el esquema de la API los
+    rechazaba con 422. En la práctica no existían, y nadie podía salir de la
+    resolución de análisis por defecto.
+    """
+    from fcopilot.config import DEFAULTS
+
+    campos = set(backend.ConfigRequest.model_fields)
+    campos.discard("model")          # se llama `model_path` en los defaults
+    campos.add("model_path")
+    inalcanzables = set(DEFAULTS) - campos - set(CLAVES_NO_EXPUESTAS)
+    assert not inalcanzables, (
+        f"claves de configuración que nadie puede cambiar por la API: {sorted(inalcanzables)}. "
+        "Añádelas a ConfigRequest, o a CLAVES_NO_EXPUESTAS con el motivo."
+    )
+
+
+def test_toda_clave_no_expuesta_tiene_su_motivo_escrito():
+    from fcopilot.config import DEFAULTS
+
+    for clave, motivo in CLAVES_NO_EXPUESTAS.items():
+        assert clave in DEFAULTS, f"{clave} ya no existe: quítala de la lista"
+        assert len(motivo) > 40, f"{clave}: el motivo tiene que explicar, no etiquetar"

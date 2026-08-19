@@ -91,8 +91,14 @@ def test_un_frame_sin_detecciones_no_es_un_error(fake_yolo, frame):
     assert Detector(dict(CONFIG_NORMAL)).predict(frame) == ([], [], [])
 
 
-def test_el_modo_sahi_cae_al_normal_si_sahi_no_esta_listo(fake_yolo, frame):
-    """Degradar es correcto; degradar en silencio y sin detectar nada, no."""
+def test_el_modo_sahi_cae_al_normal_si_sahi_no_esta_listo(fake_yolo, frame, monkeypatch):
+    """Degradar es correcto; degradar en silencio y sin detectar nada, no.
+
+    La ausencia de SAHI se fuerza en vez de darla por hecha: la versión anterior
+    afirmaba `sahi_ready is False` y sólo pasaba en un entorno donde SAHI no
+    estuviera instalado — es decir, probaba el entorno y no el código.
+    """
+    monkeypatch.setattr(detection, "SAHI_AVAILABLE", False)
     fake_yolo.set_script([[((10, 10, 34, 70), 0.8, PERSON_CLASS)]])
     detector = Detector(dict(CONFIG_NORMAL, detection_mode="sahi"))
     assert detector.sahi_ready is False
