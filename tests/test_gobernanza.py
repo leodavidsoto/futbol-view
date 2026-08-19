@@ -14,11 +14,15 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import math
+import re
 from pathlib import Path
 
 import pytest
 
 RAIZ = Path(__file__).resolve().parent.parent
+
+from fcopilot.load import SPEED_BANDS
 
 
 def _cargar_guardia():
@@ -319,3 +323,41 @@ def test_toda_excepcion_de_cobertura_tiene_su_motivo_escrito():
     """Un número bajo sin motivo es un número que alguien baja cuando le estorba."""
     sin_motivo = [m for m, (minimo, motivo) in cobertura.MINIMOS.items() if minimo < 85 and not motivo]
     assert not sin_motivo, f"suelos bajos sin justificar: {sin_motivo}"
+
+
+# ── El frontend y el backend no pueden discrepar sobre las bandas ───────
+FORMAT_JS = RAIZ / "frontend" / "src" / "lib" / "format.js"
+
+
+def _bandas_del_frontend():
+    """Extrae `SPEED_ZONES` de `format.js` sin ejecutar JavaScript."""
+    texto = FORMAT_JS.read_text(encoding="utf-8")
+    bloque = re.search(r"export const SPEED_ZONES = \[(.*?)\];", texto, re.S)
+    assert bloque, "no encuentro SPEED_ZONES en format.js"
+    filas = re.findall(
+        r'\{\s*name:\s*"([^"]+)",\s*min:\s*([\d.]+),\s*max:\s*([\d.]+|Infinity)',
+        bloque.group(1),
+    )
+    return [
+        (nombre, float(bajo), math.inf if alto == "Infinity" else float(alto))
+        for nombre, bajo, alto in filas
+    ]
+
+
+def test_las_bandas_del_cliente_son_las_del_nucleo():
+    """Un comentario que pide que coincidan no impide que dejen de coincidir.
+
+    Y dejaron de coincidir: el núcleo pasó a los cortes de la bibliografía de
+    GPS (7,2 / 14,4 / 19,8 / 25,2 km/h) y el cliente se quedó en los redondos
+    7/14/20/25 con otros nombres. El resultado es de los peores que hay: la app
+    pintaba a un jugador «en carrera» mientras el informe lo contaba como
+    «trote», con las dos cifras salidas del mismo sistema.
+
+    Esta prueba es la que convierte ese comentario en una regla.
+    """
+    del_cliente = _bandas_del_frontend()
+    del_nucleo = [(nombre, bajo, alto) for nombre, bajo, alto in SPEED_BANDS]
+    assert del_cliente == del_nucleo, (
+        "las bandas de `frontend/src/lib/format.js` no coinciden con "
+        "`fcopilot.load.SPEED_BANDS`. Cambia las dos o ninguna."
+    )

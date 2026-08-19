@@ -68,8 +68,8 @@ describe("velocidad", () => {
   it.each([
     [3, "caminando"],
     [10, "trote"],
-    [17, "carrera"],
-    [23, "alta_intensidad"],
+    [17, "alta_velocidad"],
+    [23, "muy_alta_velocidad"],
     [31, "sprint"],
   ])("%s km/h está en la zona %s", (kmh, zona) => {
     expect(speedZone(kmh).name).toBe(zona);

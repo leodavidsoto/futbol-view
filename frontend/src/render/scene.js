@@ -14,7 +14,14 @@
 
 import { BALL_COLOR, TEAM_COLORS, hexToRgba, teamColor } from "../lib/format.js";
 
-/** Dimensiones del campo reglamentario, en metros. */
+/**
+ * Dimensiones del campo, en metros.
+ *
+ * Es el **respaldo** cuando no se sabe en qué campo se juega, no una constante:
+ * desde que la calibración usa plantillas, un partido de fútbol 7 mide 60×40 y
+ * uno de sala 40×20. Dar por hecho 105×68 amontonaba a todos los jugadores de
+ * un campo pequeño en la esquina superior izquierda del mini-mapa.
+ */
 export const FIELD_M = { width: 105, height: 68 };
 
 /** Etiquetas y colores de las cuatro esquinas de calibración, en orden. */
@@ -214,18 +221,18 @@ export function drawBall(ctx, data) {
  * todos los jugadores del frame: mezclar los dos pondría a unos en su sitio y
  * a otros no.
  */
-export function projectToMinimap(point, { useWorld, box, frame }) {
+export function projectToMinimap(point, { useWorld, box, frame, field = FIELD_M }) {
   const [x, y] = point;
   if (useWorld) {
     return [
-      box.x + (x / FIELD_M.width) * box.width,
-      box.y + (y / FIELD_M.height) * box.height,
+      box.x + (x / field.width) * box.width,
+      box.y + (y / field.height) * box.height,
     ];
   }
   return [box.x + (x / frame.width) * box.width, box.y + (y / frame.height) * box.height];
 }
 
-export function drawMinimap(ctx, data, { width, height, overrides = {}, posOverrides = {} }) {
+export function drawMinimap(ctx, data, { width, height, overrides = {}, posOverrides = {}, field = FIELD_M }) {
   if (!data.players?.length) return;
   const box = {
     x: width - MINIMAP.width - MINIMAP.margin,
@@ -264,15 +271,17 @@ export function drawMinimap(ctx, data, { width, height, overrides = {}, posOverr
   const useWorld = data.players.some((p) => p.world_pos);
 
   data.players.forEach((player) => {
+    // La elección de sistema de coordenadas se hizo una vez para todo el frame,
+    // y aquí se respeta. Antes se decidía por jugador: con calibración, uno sin
+    // `world_pos` caía a proyección por píxeles y aparecía en un punto del
+    // mini-mapa que no tiene nada que ver con dónde está — mezclando en el
+    // mismo dibujo dos sistemas de coordenadas, que es justo lo que el contrato
+    // de `projectToMinimap` dice que no se hace. No pintarlo es mejor que
+    // pintarlo mal: un hueco se ve, una posición falsa no.
+    if (useWorld && !player.world_pos) return;
     const color = teamColor(effectiveTeam(player, overrides));
-    const point = useWorld && player.world_pos
-      ? player.world_pos
-      : effectiveCenter(player, posOverrides);
-    const [px, py] = projectToMinimap(point, {
-      useWorld: Boolean(useWorld && player.world_pos),
-      box,
-      frame,
-    });
+    const point = useWorld ? player.world_pos : effectiveCenter(player, posOverrides);
+    const [px, py] = projectToMinimap(point, { useWorld, box, frame, field });
     ctx.beginPath();
     ctx.arc(px, py, 3.5, 0, Math.PI * 2);
     ctx.fillStyle = color;
@@ -288,6 +297,7 @@ export function drawMinimap(ctx, data, { width, height, overrides = {}, posOverr
       useWorld: Boolean(world),
       box,
       frame,
+      field,
     });
     ctx.beginPath();
     ctx.arc(px, py, 3.5, 0, Math.PI * 2);

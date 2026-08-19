@@ -485,9 +485,18 @@ class FootballAnalyzer:
         Se guarda una media incremental y no la lista de descriptores: la lista
         crecería sin tope durante todo el partido, y la media es lo único que se
         usa después.
+
+        **Hay dos contadores y tiene que haberlos.** ``appearance_frames`` cuenta
+        frames vistos y decide cuándo tomar muestra; ``appearance_n`` cuenta
+        muestras y es el peso de la media. Con uno solo —como estaba— el
+        contador crecía cinco veces más rápido que las muestras, así que la
+        muestra número 21 entraba con peso 1/101 en vez de 1/21: el descriptor
+        se congelaba en los primeros recortes del jugador, que son justo los
+        peores, y la fusión de tracklets decidía con ellos.
         """
-        if track.get("appearance_n", 0) and track["appearance_n"] % self.APPEARANCE_EVERY:
-            track["appearance_n"] += 1
+        vistos = track.get("appearance_frames", 0)
+        track["appearance_frames"] = vistos + 1
+        if vistos % self.APPEARANCE_EVERY:
             return
         describe = getattr(self.team_clf, "describe", None)
         if describe is None:
@@ -564,6 +573,19 @@ class FootballAnalyzer:
         dice cuántas identidades había y cuántas quedan. Ese número es lo que
         hay que mirar para saber si esto sirve de algo con un vídeo concreto.
         """
+        if self.active_session is not None:
+            # Un análisis en curso sigue alimentando esos tracks. Fusionar ahora
+            # los sacaría del diccionario que el bucle de frames está usando, y
+            # el propio bucle volvería a crearlos: se re-fragmentaría lo que se
+            # acaba de coser. Se declina y se dice por qué.
+            return {
+                "identities_before": len(self.tracks),
+                "identities_after": len(self.tracks),
+                "merged": 0,
+                "rejected_candidates": 0,
+                "detail": [],
+                "skipped": "analisis_en_curso",
+            }
         with self.state_lock:
             if config is None:
                 config = MergeConfig(
@@ -742,13 +764,18 @@ class FootballAnalyzer:
         if merge:
             self.merge_tracklets()
         informe = self.get_export(include_positions=False)
+        # Con `merge=False` el panel enseña los datos crudos, así que el resumen
+        # de una fusión anterior no describe lo que se está enseñando: usarlo
+        # daba una fragmentación inventada y, peor, callaba el aviso
+        # `sin_fusion` que es justo el que corresponde.
+        ultima_fusion = self.last_merge if merge else None
         with self.state_lock:
             calidad = Quality(
                 calibrated=self.is_calibrated,
                 time_source=self.time_source or TIME_SOURCE_VIDEO,
                 players_tracked=len(self.tracks),
                 identities_before_merge=(
-                    (self.last_merge or {}).get("identities_before") if self.last_merge else None
+                    ultima_fusion.get("identities_before") if ultima_fusion else None
                 ),
                 rejected_steps=int((informe.get("totals") or {}).get("rejected_steps", 0)),
                 frames_analyzed=self.frame_count,

@@ -225,20 +225,62 @@ describe("mini-mapa", () => {
     expect(projectToMinimap([427, 240], { useWorld: false, box, frame: canvas })).toEqual([80, 48]);
   });
 
-  it("un jugador sin world_pos no se proyecta como si tuviera metros", () => {
-    // El bug que esto evita: mezclar los dos sistemas pone a unos en su sitio
-    // y a otros en una esquina.
+  it("con calibración, un jugador sin metros no se dibuja en el sitio equivocado", () => {
+    // La versión anterior de esta prueba comprobaba que los dos jugadores
+    // caían en el mismo punto, y elegía unas coordenadas —(52,5, 34) en metros
+    // y (427, 240) en píxeles— que **coinciden por construcción**: pasaba igual
+    // con la mezcla de sistemas y sin ella, así que no comprobaba nada.
+    //
+    // La garantía real es que el mini-mapa usa un solo sistema de coordenadas
+    // por frame. Un jugador sin `world_pos` cuando hay calibración no se pinta:
+    // un hueco se ve, y una posición falsa no.
     const ctx = fakeCtx();
     drawMinimap(
       ctx,
-      { players: [jugador({ world_pos: [52.5, 34] }), jugador({ track_id: 2, center: [427, 240] })] },
+      {
+        players: [
+          jugador({ world_pos: [52.5, 34] }),
+          jugador({ track_id: 2, center: [50, 400] }),   // sin metros, y lejos
+        ],
+      },
       { ...canvas, overrides: {}, posOverrides: {} },
     );
     const puntos = llamadas(ctx, "arc").slice(1);   // el primero es el círculo central
-    expect(puntos).toHaveLength(2);
-    const [a, b] = puntos.map((c) => c.args.slice(0, 2));
-    expect(a[0]).toBeCloseTo(b[0], 0);
-    expect(a[1]).toBeCloseTo(b[1], 0);
+    expect(puntos).toHaveLength(1);
+
+    // Y el que queda está donde estaría si fuera el único: la presencia del
+    // otro no le mueve.
+    const solo = fakeCtx();
+    drawMinimap(
+      solo,
+      { players: [jugador({ world_pos: [52.5, 34] })] },
+      { ...canvas, overrides: {}, posOverrides: {} },
+    );
+    expect(puntos[0].args.slice(0, 2)).toEqual(
+      llamadas(solo, "arc").slice(1)[0].args.slice(0, 2),
+    );
+  });
+
+  it("sin calibración se dibujan todos, por proporción del frame", () => {
+    const ctx = fakeCtx();
+    drawMinimap(
+      ctx,
+      { players: [jugador({ center: [427, 240] }), jugador({ track_id: 2, center: [50, 400] })] },
+      { ...canvas, overrides: {}, posOverrides: {} },
+    );
+    expect(llamadas(ctx, "arc").slice(1)).toHaveLength(2);
+  });
+
+  it("el mini-mapa usa las medidas del campo que se le den", () => {
+    // Con las plantillas de calibración, un campo de fútbol 7 mide 60×40. Dar
+    // 105×68 por hecho amontonaba a todo el equipo en la esquina.
+    const siete = { width: 60, height: 40 };
+    expect(projectToMinimap([30, 20], { useWorld: true, box, frame: canvas, field: siete }))
+      .toEqual([80, 48]);
+    // Y el mismo punto con el campo grande cae mucho más arriba y a la izquierda.
+    const [x, y] = projectToMinimap([30, 20], { useWorld: true, box, frame: canvas });
+    expect(x).toBeLessThan(80);
+    expect(y).toBeLessThan(48);
   });
 
   it("sin jugadores no se dibuja", () => {

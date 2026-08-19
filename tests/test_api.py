@@ -730,3 +730,19 @@ def test_el_panel_trae_lo_que_un_dt_lee_y_no_mas(client):
     }
     # Y el aviso de que los umbrales no son ciencia viaja con el resultado.
     assert "no sustituye" in panel["thresholds"]["note"].lower()
+
+
+def test_un_punto_con_tres_coordenadas_es_400_y_no_500(client):
+    """Las rutas hermanas ya validaban la forma; ésta llegaba hasta numpy."""
+    puntos = _puntos_de_calibracion(client)
+    puntos["centro"] = [1.0, 2.0, 3.0]
+    respuesta = client.post("/api/calibrate-landmarks", json={"points": puntos})
+    assert respuesta.status_code == 400
+    assert "centro" in respuesta.json()["detail"]
+
+
+def test_un_punto_vacio_tambien_es_400(client):
+    puntos = _puntos_de_calibracion(client)
+    puntos["medio_arriba"] = []
+    respuesta = client.post("/api/calibrate-landmarks", json={"points": puntos})
+    assert respuesta.status_code == 400

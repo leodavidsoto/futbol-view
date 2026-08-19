@@ -507,9 +507,8 @@ def _track_recto(analyzer, tid: int, t0: float, x0: float, pasos: int = 25, dx: 
     return kin
 
 
-def test_la_fusion_reduce_las_identidades_del_mismo_jugador():
+def test_la_fusion_reduce_las_identidades_del_mismo_jugador(analyzer):
     """El defecto medido: 51 identidades para ~22 jugadores."""
-    analyzer = FootballAnalyzer()
     for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0), (11.0, 220.0)], start=1):
         _track_recto(analyzer, tid, t0, x0)
 
@@ -520,7 +519,7 @@ def test_la_fusion_reduce_las_identidades_del_mismo_jugador():
     assert list(analyzer.tracks) == [1]
 
 
-def test_la_fusion_no_inventa_la_distancia_del_hueco():
+def test_la_fusion_no_inventa_la_distancia_del_hueco(analyzer):
     """Es la trampa entera de coser tracklets, y no la delata ningún filtro.
 
     Entre el final de un trozo y el principio del siguiente hay 14 px, o sea
@@ -529,7 +528,6 @@ def test_la_fusion_no_inventa_la_distancia_del_hueco():
     sin ningún aviso. La distancia del jugador fusionado tiene que ser
     exactamente la suma de lo que se observó, ni un metro más.
     """
-    analyzer = FootballAnalyzer()
     kins = [
         _track_recto(analyzer, tid, t0, x0)
         for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0), (11.0, 220.0)], start=1)
@@ -541,9 +539,8 @@ def test_la_fusion_no_inventa_la_distancia_del_hueco():
     assert analyzer.tracks[1]["kinematics"].total_distance_m == pytest.approx(observado)
 
 
-def test_la_fusion_conserva_las_muestras_en_orden():
+def test_la_fusion_conserva_las_muestras_en_orden(analyzer):
     """Sin orden, la estela se dibuja en zigzag y `update` dejaría de valer."""
-    analyzer = FootballAnalyzer()
     for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0)], start=1):
         _track_recto(analyzer, tid, t0, x0)
 
@@ -553,9 +550,8 @@ def test_la_fusion_conserva_las_muestras_en_orden():
     assert [s.t for s in muestras] == sorted(s.t for s in muestras)
 
 
-def test_dos_jugadores_de_verdad_no_se_fusionan():
+def test_dos_jugadores_de_verdad_no_se_fusionan(analyzer):
     """Fusionar de más es peor que no fusionar: inventa un jugador."""
-    analyzer = FootballAnalyzer()
     _track_recto(analyzer, 1, 0.0, 0.0)
     _track_recto(analyzer, 2, 0.0, 900.0)      # a la vez y lejos
 
@@ -565,23 +561,20 @@ def test_dos_jugadores_de_verdad_no_se_fusionan():
     assert sorted(analyzer.tracks) == [1, 2]
 
 
-def test_la_fusion_declara_en_que_unidades_trabajo():
+def test_la_fusion_declara_en_que_unidades_trabajo(analyzer):
     """En píxeles el radio significa otra cosa, y hay que poder saberlo."""
-    analyzer = FootballAnalyzer()
     _track_recto(analyzer, 1, 0.0, 0.0)
     assert analyzer.merge_tracklets()["units"] == "px"
 
 
-def test_fusionar_sin_tracks_no_revienta():
-    analyzer = FootballAnalyzer()
+def test_fusionar_sin_tracks_no_revienta(analyzer):
     resumen = analyzer.merge_tracklets()
     assert resumen["identities_before"] == 0
     assert resumen["identities_after"] == 0
 
 
-def test_el_equipo_conocido_sobrevive_a_la_fusion():
+def test_el_equipo_conocido_sobrevive_a_la_fusion(analyzer):
     """Si un trozo sabe de qué equipo es y el otro no, no se pierde el dato."""
-    analyzer = FootballAnalyzer()
     _track_recto(analyzer, 1, 0.0, 0.0)
     _track_recto(analyzer, 2, 5.5, 110.0)
     analyzer.tracks[2]["team"] = "team_1"
@@ -591,9 +584,8 @@ def test_el_equipo_conocido_sobrevive_a_la_fusion():
     assert analyzer.tracks[1]["team"] == "team_1"
 
 
-def test_la_fusion_converge_si_se_repite():
+def test_la_fusion_converge_si_se_repite(analyzer):
     """Una segunda pasada trabaja sobre el resultado de la primera y no cambia nada."""
-    analyzer = FootballAnalyzer()
     for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0), (11.0, 220.0)], start=1):
         _track_recto(analyzer, tid, t0, x0)
 
@@ -605,7 +597,7 @@ def test_la_fusion_converge_si_se_repite():
     assert analyzer.tracks[1]["kinematics"].total_distance_m == pytest.approx(distancia)
 
 
-def test_una_sesion_restaurada_conserva_el_campo_no_solo_la_homografia():
+def test_una_sesion_restaurada_conserva_el_campo_no_solo_la_homografia(analyzer, fake_yolo):
     """Decía «calibrado» y «sin campo» a la vez, que no puede ser las dos cosas.
 
     La homografía se serializaba y el campo no, así que al reiniciar el backend
@@ -617,7 +609,6 @@ def test_una_sesion_restaurada_conserva_el_campo_no_solo_la_homografia():
 
     from fcopilot.pitch import PITCH_7
 
-    analyzer = FootballAnalyzer()
     puntos = PITCH_7.keypoints()
     H = np.array([[8.0, 1.5, 120.0], [0.0, 7.0, 60.0], [0.0, 0.004, 1.0]])
 
@@ -628,7 +619,7 @@ def test_una_sesion_restaurada_conserva_el_campo_no_solo_la_homografia():
     nombres = ["esquina_izq_arriba", "esquina_der_abajo", "esquina_der_arriba", "esquina_izq_abajo"]
     analyzer.calibrate_from_landmarks({n: proyectar(puntos[n]) for n in nombres}, "futbol_7")
 
-    restaurado = FootballAnalyzer()
+    restaurado = FootballAnalyzer({"tracker_type": "simple", "detection_mode": "normal"})
     restaurado.load_state(analyzer.serialize_state())
 
     assert restaurado.is_calibrated
@@ -637,13 +628,74 @@ def test_una_sesion_restaurada_conserva_el_campo_no_solo_la_homografia():
     assert restaurado.get_dashboard()["match"]["pitch"] == "futbol_7"
 
 
-def test_un_campo_guardado_que_ya_no_existe_no_tumba_la_restauracion():
+def test_un_campo_guardado_que_ya_no_existe_no_tumba_la_restauracion(analyzer, fake_yolo):
     """Se pierde la etiqueta, no la sesión entera."""
-    analyzer = FootballAnalyzer()
     estado = analyzer.serialize_state()
     estado["pitch"] = "futbol_marciano"
 
-    restaurado = FootballAnalyzer()
+    restaurado = FootballAnalyzer({"tracker_type": "simple", "detection_mode": "normal"})
     restaurado.load_state(estado)
 
     assert restaurado.pitch is None
+
+
+def test_no_se_fusiona_mientras_un_analisis_esta_en_curso(analyzer):
+    """Fusionar durante el análisis re-fragmenta lo que se acaba de coser.
+
+    El bucle de frames sigue alimentando esos tracks. Sacarlos del diccionario
+    que está usando hace que el propio bucle los vuelva a crear con
+    identificadores nuevos, así que la fusión no sólo no ayuda: deshace su
+    propio trabajo. El panel se abre con la fusión activada, y abrirlo a mitad
+    de partido es lo más normal del mundo.
+    """
+    for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0)], start=1):
+        _track_recto(analyzer, tid, t0, x0)
+
+    assert analyzer.try_acquire_session("video")
+    try:
+        resumen = analyzer.merge_tracklets()
+    finally:
+        analyzer.release_session("video")
+
+    assert resumen["skipped"] == "analisis_en_curso"
+    assert resumen["merged"] == 0
+    assert sorted(analyzer.tracks) == [1, 2]        # intactos
+
+    # Y en cuanto termina, la fusión sí ocurre.
+    assert analyzer.merge_tracklets()["merged"] == 1
+
+
+def test_el_panel_sin_fusionar_no_reutiliza_el_resumen_de_una_fusion_vieja(analyzer):
+    """Describiría algo que no es lo que se está enseñando.
+
+    Daba una fragmentación inventada y, peor, callaba el aviso `sin_fusion`,
+    que es justo el que corresponde cuando se enseñan los datos crudos.
+    """
+    for tid, (t0, x0) in enumerate([(0.0, 0.0), (5.5, 110.0)], start=1):
+        _track_recto(analyzer, tid, t0, x0)
+    analyzer.merge_tracklets()
+    assert analyzer.last_merge["merged"] == 1
+
+    crudo = analyzer.get_dashboard(merge=False)
+
+    assert crudo["quality"]["identities_before_merge"] is None
+    assert "sin_fusion" in [a["code"] for a in crudo["quality"]["warnings"]]
+
+
+def test_el_descriptor_de_apariencia_no_se_congela_en_los_primeros_recortes(analyzer, green_frame):
+    """Había dos usos de un mismo contador y se estorbaban.
+
+    `appearance_n` contaba frames vistos y a la vez hacía de peso de la media,
+    y como sólo se muestrea 1 de cada 5, crecía cinco veces más rápido que las
+    muestras: la muestra 21 entraba con peso 1/101 en vez de 1/21. El
+    descriptor se quedaba clavado en los primeros recortes del jugador —los
+    peores— y la fusión de tracklets decidía con ellos.
+    """
+    track = {"name": "#1", "team": "unknown", "kinematics": None}
+    bbox = (10.0, 10.0, 40.0, 70.0)
+    for _ in range(50):
+        analyzer._accumulate_appearance(track, green_frame, bbox)
+
+    # 50 frames muestreando 1 de cada 5 son 10 muestras, no 50.
+    assert track["appearance_frames"] == 50
+    assert track["appearance_n"] == 50 // FootballAnalyzer.APPEARANCE_EVERY

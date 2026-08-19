@@ -477,6 +477,12 @@ def calibrate_landmarks(
     haciendo clic, o los de un modelo de registro de campo— resolver por
     mínimos cuadrados sobre muchos da mejor resultado que exacto sobre cuatro.
     """
+    # Las rutas hermanas validan la forma de cada punto; ésta no lo hacía, así
+    # que un payload con un punto de tres coordenadas llegaba hasta numpy y
+    # salía como 500 en vez de 400.
+    malos = sorted(n for n, punto in data.points.items() if len(punto) != 2)
+    if malos:
+        raise _http(400, f"cada punto debe tener 2 coordenadas; no la tienen: {', '.join(malos)}")
     analyzer = get_analyzer(session_id)
     try:
         resultado = analyzer.calibrate_from_landmarks(data.points, data.pitch)
@@ -788,15 +794,22 @@ async def process_video(file: UploadFile = File(...), session_id: str = Depends(
         raise
 
     async def generate():
-        cap = cv2.VideoCapture(tmp_path)
-        analyzer.soft_reset()
-        video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        if not 1.0 <= video_fps <= 240.0:
-            video_fps = 25.0
-        frame_skip = int(analyzer.config["frame_skip"])
-        size = target_size(analyzer)
+        # Todo lo que puede lanzar va DENTRO del try cuyo finally suelta el
+        # semáforo, la reserva de sesión y el temporal. Estaba fuera: abrir el
+        # vídeo, reiniciar el analizador y leer la configuración pueden fallar,
+        # y si fallaban ahí el hueco de análisis y la reserva no se soltaban
+        # nunca. El servicio se quedaba respondiendo 429 y 409 para siempre,
+        # con un fichero temporal por cada intento.
+        cap = None
         n = 0
         try:
+            cap = cv2.VideoCapture(tmp_path)
+            analyzer.soft_reset()
+            video_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+            if not 1.0 <= video_fps <= 240.0:
+                video_fps = 25.0
+            frame_skip = int(analyzer.config["frame_skip"])
+            size = target_size(analyzer)
             if not cap.isOpened():
                 yield json.dumps({"error": "No se pudo abrir el video"}) + "\n"
                 return
@@ -819,7 +832,10 @@ async def process_video(file: UploadFile = File(...), session_id: str = Depends(
             logger.exception("Error analizando video: %s", exc)
             yield json.dumps({"error": "Fallo durante el analisis del video"}) + "\n"
         finally:
-            cap.release()
+            # `cap` puede seguir siendo None si VideoCapture lanzó: el finally
+            # tiene que soltar el resto igualmente, que es para lo que está.
+            if cap is not None:
+                cap.release()
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_path)
             analyzer.release_session(lease)

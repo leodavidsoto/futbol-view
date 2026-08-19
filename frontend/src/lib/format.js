@@ -47,13 +47,22 @@ export function fmtSpeed(kmh) {
   return `${(Number(kmh) || 0).toFixed(1)} km/h`;
 }
 
-/** Zonas de intensidad; deben coincidir con `fcopilot.kinematics.SPEED_ZONES`. */
+/**
+ * Zonas de intensidad. **Coinciden con `fcopilot.load.SPEED_BANDS`, y eso lo
+ * comprueba una prueba** (`tests/test_gobernanza.py`), no este comentario.
+ *
+ * Ya divergieron: el backend pasó a los cortes de la bibliografía de GPS
+ * (7,2 / 14,4 / 19,8 / 25,2 km/h) y esta tabla se quedó en los redondos
+ * 7/14/20/25 con otros nombres. El resultado es de los peores que hay: la app
+ * pintaba a un jugador «en carrera» mientras el informe lo contaba como
+ * «trote», y las dos cifras venían del mismo sistema.
+ */
 export const SPEED_ZONES = [
-  { name: "caminando", min: 0, max: 7, color: "#4a90d9" },
-  { name: "trote", min: 7, max: 14, color: "#00c07f" },
-  { name: "carrera", min: 14, max: 20, color: "#ffdd00" },
-  { name: "alta_intensidad", min: 20, max: 25, color: "#ff9500" },
-  { name: "sprint", min: 25, max: Infinity, color: "#ff3355" },
+  { name: "caminando", min: 0, max: 7.2, color: "#4a90d9" },
+  { name: "trote", min: 7.2, max: 14.4, color: "#00c07f" },
+  { name: "alta_velocidad", min: 14.4, max: 19.8, color: "#ffdd00" },
+  { name: "muy_alta_velocidad", min: 19.8, max: 25.2, color: "#ff9500" },
+  { name: "sprint", min: 25.2, max: Infinity, color: "#ff3355" },
 ];
 
 export function speedZone(kmh) {

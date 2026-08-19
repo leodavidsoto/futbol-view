@@ -231,3 +231,25 @@ def test_no_ajusta_con_muestras_identicas():
     clf._features = [np.array([50.0, 100.0, 100.0])] * 10
     clf._fit_features()
     assert clf.is_fitted is False
+
+
+def test_las_muestras_de_color_no_crecen_sin_tope(green_frame):
+    """Un acumulador sin tope ya fue un defecto de este fichero.
+
+    El ajuste sólo mira las últimas 600 muestras, así que guardar las de un
+    partido entero era memoria —unos 100 MB en noventa minutos— que nadie leía.
+    """
+    clf = ColorTeamClassifier(min_samples=4)
+    bbox = (10, 10, 40, 70)
+    for _ in range(ColorTeamClassifier.MAX_FEATURES + 500):
+        clf.predict(green_frame, bbox, track_id=1)
+    assert len(clf._features) <= ColorTeamClassifier.MAX_FEATURES
+
+
+def test_recortar_conserva_las_muestras_mas_recientes(green_frame):
+    """Recortar por el principio: las viejas son las que dejan de valer."""
+    clf = ColorTeamClassifier(min_samples=4)
+    clf._features = [np.full(3, float(i)) for i in range(clf.MAX_FEATURES + 10)]
+    clf._recortar_features()
+    assert len(clf._features) == clf.MAX_FEATURES
+    assert clf._features[-1][0] == float(clf.MAX_FEATURES + 9)

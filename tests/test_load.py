@@ -389,3 +389,110 @@ def test_un_jugador_nunca_visto_no_tiene_perfil_ni_caida():
     assert carga.profile() == []
     assert carga.dropoff() is None
     assert carga.summary()["per_minute"]["dist_m"] is None
+
+
+# ── Fusión de carga ─────────────────────────────────────────────────────
+def test_absorber_suma_lo_medido_y_no_inventa_el_hueco():
+    """Al coser dos trozos, entre ellos no se recorrió nada observable."""
+    primero = alimentar(ExternalLoad(), [20.0] * 200, dt=1.0, t0=0.0)
+    segundo = alimentar(ExternalLoad(), [20.0] * 200, dt=1.0, t0=500.0)
+    primero.finalize()
+    segundo.finalize()
+    esperado = primero.total_distance_m + segundo.total_distance_m
+
+    primero.absorb(segundo)
+
+    assert primero.total_distance_m == pytest.approx(esperado)
+    assert primero.observed_seconds == pytest.approx(700.0)
+    assert primero.peak_speed_kmh == pytest.approx(20.0)
+
+
+def test_absorber_a_un_jugador_nunca_visto_no_borra_lo_que_ya_habia():
+    """`None` en los extremos significa «no consta», no cero."""
+    visto = alimentar(ExternalLoad(), [20.0] * 100, dt=1.0, t0=300.0)
+    visto.finalize()
+    antes = visto.observed_seconds
+
+    visto.absorb(ExternalLoad())          # uno sin una sola muestra
+
+    assert visto.observed_seconds == pytest.approx(antes)
+
+
+def test_absorber_desde_vacio_adopta_los_extremos_del_otro():
+    vacio = ExternalLoad()
+    otro = alimentar(ExternalLoad(), [20.0] * 100, dt=1.0, t0=300.0)
+    otro.finalize()
+
+    vacio.absorb(otro)
+
+    assert vacio.observed_seconds == pytest.approx(otro.observed_seconds)
+    assert vacio.total_distance_m == pytest.approx(otro.total_distance_m)
+
+
+def test_absorber_respeta_el_tope_de_bloques():
+    lleno = ExternalLoad()
+    for i in range(ExternalLoad.MAX_BUCKETS):
+        lleno.add_step(t_start=i * 60.0, dt_s=1.0, distance_m=5.0,
+                       speed_start_kmh=None, speed_end_kmh=18.0)
+    otro = ExternalLoad()
+    otro.add_step(t_start=99999.0, dt_s=1.0, distance_m=5.0,
+                  speed_start_kmh=None, speed_end_kmh=18.0)
+
+    lleno.absorb(otro)
+
+    assert len(lleno.buckets) <= ExternalLoad.MAX_BUCKETS
+
+
+def test_un_minimo_de_observacion_negativo_se_rechaza():
+    with pytest.raises(ValueError):
+        LoadConfig(min_observed_s_for_rates=-1.0)
+
+
+def test_un_tramo_de_duracion_cero_se_ignora():
+    """Puede llegar de un vídeo con marcas de tiempo repetidas."""
+    carga = ExternalLoad()
+    carga.add_step(t_start=0.0, dt_s=0.0, distance_m=5.0,
+                   speed_start_kmh=None, speed_end_kmh=20.0)
+    assert carga.total_distance_m == 0.0
+    assert carga.observed_seconds == 0.0
+
+
+def test_una_ventana_reciente_sin_tiempo_observado_no_da_caida():
+    """Dividir entre cero segundos daría un infinito con pinta de métrica."""
+    config = LoadConfig(bucket_s=60.0, dropoff_window_s=60.0)
+    carga = ExternalLoad(config)
+    alimentar(carga, [20.0] * 120, dt=1.0, t0=0.0)
+    # Un bloque reciente registrado a mano, con distancia pero sin segundos.
+    carga.buckets[max(carga.buckets) + 1] = type(carga.buckets[0])(
+        distance_m=50.0, high_intensity_m=50.0, sprint_m=0.0, seconds=0.0
+    )
+    carga._last_t = (max(carga.buckets) + 1) * 60.0
+    assert carga.dropoff() is None
+
+
+def test_al_coser_no_se_pierden_los_sprints_abiertos_de_los_dos_trozos():
+    """El hueco interrumpe el esfuerzo, pero el esfuerzo ocurrió.
+
+    `absorb` ponía `_sprint_elapsed` a cero sin contarlo y no cerraba el trozo
+    absorbido: se perdían dos sprints por cada costura, y un jugador partido en
+    tres perdía cuatro. Los sprints son de las pocas cifras del panel que un DT
+    mira una a una.
+    """
+    from fcopilot.kinematics import PlayerKinematics, Sample
+
+    def trozo_terminando_en_sprint(track_id, t0):
+        kin = PlayerKinematics(track_id)
+        # 28 km/h = 7,78 m/s sostenidos durante 4 s.
+        for i in range(20):
+            t = t0 + i * 0.2
+            kin.update(Sample(frame=i, t=t, x=0.0, y=0.0, wx=(t - t0) * 7.78, wy=0.0))
+        return kin
+
+    primero = trozo_terminando_en_sprint(1, 0.0)
+    segundo = trozo_terminando_en_sprint(2, 10.0)
+    assert primero.sprints == 0 and segundo.sprints == 0     # los dos abiertos
+
+    primero.absorb(segundo)
+
+    assert primero.sprints == 2
+    assert primero.load.sprint_count == 2

@@ -306,6 +306,14 @@ class PlayerKinematics:
         """
         if other is self:
             return
+        # Se cierra lo que estuviera abierto en los dos trozos antes de sumar:
+        # el hueco entre ellos interrumpe de verdad cualquier esfuerzo en curso.
+        # Sin esto, el sprint con el que terminaba el primer trozo y el que
+        # traía abierto el segundo se descartaban en silencio — dos sprints
+        # perdidos por cada costura, y un jugador partido en tres perdía cuatro.
+        # `finalize` es idempotente, así que llamarlo aquí no cuenta de más.
+        self.finalize()
+        other.finalize()
         self.samples = sorted(self.samples + other.samples, key=lambda s: s.t)
         if len(self.samples) > self.config.max_history:
             del self.samples[: len(self.samples) - self.config.max_history]

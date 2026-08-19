@@ -72,10 +72,18 @@ class ColorTeamClassifier:
         self.refit_every = max(1, int(refit_every))
         self.kmeans = None
         self.is_fitted = False
+        #: Muestras de color acumuladas. **Acotadas**: sólo se usan las
+        #: últimas `MAX_FEATURES` para reajustar, así que guardar las demás era
+        #: memoria que crecía todo el partido sin que nada la leyera —unos
+        #: 100 MB en noventa minutos— y ya hubo un defecto de este tipo aquí.
         self._features: List[np.ndarray] = []
         self._votes: Dict[object, Deque[str]] = defaultdict(lambda: deque(maxlen=max(1, int(vote_window))))
         self._since_fit = 0
         self._order: Tuple[int, int] = (0, 1)
+
+    #: Tope de muestras guardadas. Por encima de las 600 que usa el ajuste
+    #: para dejar margen a que la ventana se renueve.
+    MAX_FEATURES = 1200
 
     # ── Features ───────────────────────────────────────────────────────
     def _extract_features(self, frame: np.ndarray, bbox: BBox) -> Optional[np.ndarray]:
@@ -105,6 +113,11 @@ class ColorTeamClassifier:
     #: Separación mínima entre centroides (unidades HSV) para aceptar el ajuste.
     min_separation = 8.0
 
+    def _recortar_features(self) -> None:
+        """Descarta las muestras más viejas que ya no se usan para ajustar."""
+        if len(self._features) > self.MAX_FEATURES:
+            del self._features[: len(self._features) - self.MAX_FEATURES]
+
     def _fit_features(self) -> None:
         if KMeans is None or len(self._features) < self.min_samples:
             return
@@ -133,6 +146,7 @@ class ColorTeamClassifier:
             features = self._extract_features(frame, bbox)
             if features is not None:
                 self._features.append(features)
+        self._recortar_features()
         self._fit_features()
 
     def _raw_label(self, features: np.ndarray) -> str:
@@ -145,6 +159,7 @@ class ColorTeamClassifier:
         if features is None:
             return self._vote(track_id)
         self._features.append(features)
+        self._recortar_features()
         self._since_fit += 1
 
         if not self.is_fitted:
