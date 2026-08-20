@@ -25,6 +25,7 @@
         "PLANTILLAS.md",
         "ANALISIS.md",
         "INVESTIGACION.md",
+        "CUERPO_TECNICO.md",
         "PROMPT_ORQUESTACION.md",
         "README.md",
         "TESTING.md",
@@ -57,6 +58,7 @@
         "fcopilot/possession.py",
         "fcopilot/report.py",
         "fcopilot/dashboard.py",
+        "fcopilot/collective.py",
         "fcopilot/geometry.py",
         "fcopilot/pitch.py",
         "tests/test_kinematics.py",
@@ -64,6 +66,7 @@
         "tests/test_possession.py",
         "tests/test_report.py",
         "tests/test_dashboard.py",
+        "tests/test_collective.py",
         "tests/test_geometry.py",
         "tests/test_pitch.py",
         "worklog/NUCLEO/**"

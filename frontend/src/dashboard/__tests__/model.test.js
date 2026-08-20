@@ -1,20 +1,31 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BAND_ORDER,
+  COLLECTIVE_TILES,
   COLUMNS,
+  HEAT_RAMP,
   bandColor,
+  bandLabel,
   bandShares,
   byTeam,
   cell,
+  collectiveTeams,
   confidenceStyle,
   fmt,
   fmtDropoff,
   fmtDuration,
   fmtFragmentation,
+  hasCollective,
   headline,
+  heatColor,
   isActionable,
   possessionShare,
+  series,
   statusStyle,
+  teamColor,
+  teamLabel,
+  zoneGrid,
 } from "../model.js";
 
 const panel = (over = {}) => ({
@@ -216,5 +227,162 @@ describe("duración y fragmentación", () => {
     expect(fmtFragmentation(1)).toBe("1,0 identidad por jugador");
     expect(fmtFragmentation(2.32)).toBe("2,3 identidades por jugador");
     expect(fmtFragmentation(null)).toBeNull();
+  });
+});
+
+describe("rampa de bandas", () => {
+  it("es ordinal: la claridad crece con la intensidad", () => {
+    // Es lo único que hace que una barra apilada se lea como una escala, y lo
+    // que la versión anterior no cumplía: el rojo del sprint era más oscuro
+    // que el amarillo que iba antes.
+    const luz = (hex) => {
+      const n = parseInt(hex.slice(1), 16);
+      const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const claridades = BAND_ORDER.map((b) => luz(bandColor(b)));
+    for (let i = 1; i < claridades.length; i += 1) {
+      expect(claridades[i]).toBeGreaterThan(claridades[i - 1]);
+    }
+  });
+
+  it("cada banda tiene nombre legible", () => {
+    // `muy_alta_velocidad` en pantalla es un descuido, no un dato.
+    for (const banda of BAND_ORDER) {
+      expect(bandLabel(banda)).not.toContain("_");
+    }
+  });
+
+  it("una banda que el backend añada mañana no revienta la leyenda", () => {
+    expect(bandColor("banda_nueva")).toBeTruthy();
+    expect(bandLabel("banda_nueva")).toBe("banda_nueva");
+  });
+});
+
+describe("equipos", () => {
+  it("los dos equipos tienen colores distintos y nombre", () => {
+    expect(teamColor("team_1")).not.toBe(teamColor("team_2"));
+    expect(teamLabel("team_1")).toBe("Equipo 1");
+    expect(teamLabel("unknown")).toBe("Sin asignar");
+  });
+
+  it("un equipo desconocido no se pinta como uno de los dos", () => {
+    expect(teamColor("team_9")).toBe(teamColor("unknown"));
+  });
+});
+
+describe("mapa de calor", () => {
+  it("se normaliza al máximo de la rejilla y no a 100", () => {
+    // En quince zonas ninguna pasa del 20 %: contra una escala fija saldría
+    // todo del mismo color oscuro y el mapa no diría nada.
+    expect(heatColor(18, 18)).toBe(HEAT_RAMP[HEAT_RAMP.length - 1]);
+    expect(heatColor(2, 18)).toBe(HEAT_RAMP[0]);
+  });
+
+  it("una zona sin tiempo no se pinta", () => {
+    expect(heatColor(0, 18)).toBe("transparent");
+    expect(heatColor(5, 0)).toBe("transparent");
+  });
+
+  it("la rampa es de un solo tono y va de oscuro a claro", () => {
+    const luz = (hex) => {
+      const n = parseInt(hex.slice(1), 16);
+      return ((n >> 16) & 255) + ((n >> 8) & 255) + (n & 255);
+    };
+    const claridades = HEAT_RAMP.map(luz);
+    for (let i = 1; i < claridades.length; i += 1) {
+      expect(claridades[i]).toBeGreaterThan(claridades[i - 1]);
+    }
+  });
+});
+
+describe("rejilla de zonas", () => {
+  const ocupacion = {
+    total_s: 100,
+    zones: {
+      "tercio_1|banda_1": { seconds: 40, pct: 40 },
+      "tercio_1|centro": { seconds: 10, pct: 10 },
+      "tercio_2|banda_1": { seconds: 0, pct: 0 },
+      "tercio_2|centro": { seconds: 50, pct: 50 },
+    },
+  };
+
+  it("saca los tercios y los carriles del nombre de la zona", () => {
+    const rejilla = zoneGrid(ocupacion);
+    expect(rejilla.thirds).toEqual(["tercio_1", "tercio_2"]);
+    expect(rejilla.corridors).toEqual(["banda_1", "centro"]);
+    expect(rejilla.max).toBe(50);
+  });
+
+  it("una zona que no está se lee como cero y no revienta", () => {
+    expect(zoneGrid(ocupacion).cell("tercio_9", "centro")).toEqual({ seconds: 0, pct: 0 });
+  });
+
+  it("sin ocupación no hay rejilla", () => {
+    expect(zoneGrid(null)).toBeNull();
+    expect(zoneGrid({})).toBeNull();
+  });
+});
+
+describe("series temporales", () => {
+  const timeline = [
+    { from_s: 0, width_m: 30, samples: 12 },
+    { from_s: 60, width_m: 0, samples: 0 },
+    { from_s: 120, width_m: 26, samples: 9 },
+  ];
+
+  it("un bloque sin muestras no se dibuja a cero", () => {
+    // Una línea que baja a cero y vuelve se lee como un colapso que no ocurrió:
+    // ese minuto no se vio al equipo, no es que su amplitud fuera cero.
+    const puntos = series(timeline, "width_m");
+    expect(puntos).toHaveLength(2);
+    expect(puntos.map((p) => p.y)).toEqual([30, 26]);
+  });
+
+  it("el eje x va en minutos", () => {
+    expect(series(timeline, "width_m")[1].x).toBe(2);
+  });
+
+  it("sin línea de tiempo devuelve una serie vacía", () => {
+    expect(series(undefined, "width_m")).toEqual([]);
+  });
+});
+
+describe("¿hay sección colectiva?", () => {
+  it("sin calibrar no la hay, y por eso no debe haber pestaña", () => {
+    expect(hasCollective({ collective: null })).toBe(false);
+    expect(hasCollective({})).toBe(false);
+  });
+
+  it("un equipo visto pero sin forma medible tampoco la enciende", () => {
+    // Se le vio ocupar espacio, pero con tres jugadores «amplitud» no existe.
+    expect(hasCollective({ collective: { teams: { team_1: { shape: {} } } } })).toBe(false);
+  });
+
+  it("con forma medida, sí", () => {
+    const panel = { collective: { teams: { team_1: { shape: { width_m: { avg: 30 } } } } } };
+    expect(hasCollective(panel)).toBe(true);
+  });
+
+  it("los equipos salen en orden estable", () => {
+    const panel = { teams: { team_2: {}, team_1: {} } };
+    expect(collectiveTeams(panel)).toEqual(["team_1", "team_2"]);
+    expect(collectiveTeams(null)).toEqual([]);
+  });
+});
+
+describe("las fichas colectivas", () => {
+  it("usan la longitud recortada, no la completa", () => {
+    // La completa la marca el portero, treinta metros por detrás de la línea.
+    const claves = COLLECTIVE_TILES.map((t) => t.key);
+    expect(claves).toContain("length_trimmed_m");
+    expect(claves).not.toContain("length_m");
+  });
+
+  it("cada ficha dice qué es, no sólo cómo se llama", () => {
+    for (const ficha of COLLECTIVE_TILES) {
+      expect(ficha.help.length).toBeGreaterThan(10);
+      expect(ficha.unit).toBeTruthy();
+    }
   });
 });

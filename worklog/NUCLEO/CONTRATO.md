@@ -1,6 +1,6 @@
 # Contrato de NUCLEO
 
-**Versión:** 2 · **Publicado:** 2026-08-19 · **Estable desde:** 2026-08-18
+**Versión:** 3 · **Publicado:** 2026-08-20 · **Estable desde:** 2026-08-18
 
 Todo lo de aquí es importable desde `fcopilot` y no depende de FastAPI, OpenCV,
 YOLO ni torch. Se puede ejercitar entero sin vídeo y sin modelo.
@@ -165,6 +165,41 @@ aceleraciones sube**. Quien muestre esa cifra debe mostrar al lado
 referencia. **`None` no es cero:** cero afirmaría «no ha caído», y eso no
 consta.
 
+### Comportamiento colectivo (`fcopilot.collective`)
+
+```python
+team_shape(positions) -> Shape | None
+line_summary(positions, lines=3) -> dict | None
+ZoneGrid(pitch, thirds=3, corridors=5).zone_of(x, y) -> str
+Occupancy(grid).add(x, y, dt_s)
+ShapeSeries(grid, bucket_s).add(t, dt_s, positions_by_team)
+ShapeSeries.summary() / to_state() / from_state(state, grid)
+```
+
+Todo esto se calcula **sin balón**, sólo con posiciones. Es deliberado: el balón
+es lo que peor mide el sistema y lo colectivo es lo que más falta le hace a un
+entrenador, así que la parte más útil resulta ser la que mejor se puede medir.
+
+| Garantía | Detalle |
+|---|---|
+| **Metros o nada** | Las posiciones tienen que venir en metros. En píxeles, «amplitud 340» no se compara con nada; el analizador no acumula sin calibrar |
+| **`None` cuando no se sabe** | Con menos de `MIN_PLAYERS_FOR_SHAPE` no hay forma que medir: la amplitud no es pequeña, es desconocida |
+| **El portero no marca la longitud** | Está 30 m por detrás; se publican la completa y la recortada por percentiles, y la recortada es la que se enseña |
+| **Ninguna línea queda vacía** | El agrupamiento es exacto sobre intervalos contiguos, no k-medias. Un 3-2-1 daba 3-0-3 |
+| **Determinista** | Los mismos jugadores dan siempre las mismas líneas |
+| **Memoria acotada** | Agregados al vuelo y `MAX_BUCKETS` bloques; no depende de la duración |
+| **Sobrevive al reinicio** | `to_state`/`from_state`; sin esto una sesión restaurada perdía media pestaña |
+
+#### Qué NO afirma
+
+- **No dice «línea defensiva».** Sin saber hacia dónde ataca el equipo eso sería
+  inventarlo. Dice «más retrasada» y «más adelantada», que es cierto siempre.
+- **Las líneas son un agrupamiento, no una formación.** En un desorden devuelve
+  tres grupos igual; la dispersión de cada línea es lo que lo desmiente.
+- **Los tercios van numerados**, por lo mismo que las líneas.
+- **La ocupación necesita rejilla**, y la rejilla necesita saber en qué campo se
+  juega. Sin `pitch` hay forma pero no mapa de calor.
+
 ### `build_report` — el informe del partido
 
 ```python
@@ -250,6 +285,14 @@ que hay 200 m de alta intensidad y 0 m en la banda de alta velocidad.
 | `CLIENTE` | Indirectamente: la forma de `summary()` y de `snapshot()` viaja en cada frame del stream |
 
 ## Cambios desde la versión anterior
+
+### v3 (2026-08-20)
+
+- **Añade:** `fcopilot.collective` entero — forma del bloque, líneas y ocupación
+  de zonas, todo desde posiciones y sin balón.
+- **Añade:** `dashboard` sirve `collective` y `pitch`; `collective` es `None`
+  cuando no se pudo medir, y el cliente entonces no enseña la pestaña.
+- No rompe nada de v2.
 
 ### v2 (2026-08-19)
 

@@ -699,3 +699,112 @@ def test_el_descriptor_de_apariencia_no_se_congela_en_los_primeros_recortes(anal
     # 50 frames muestreando 1 de cada 5 son 10 muestras, no 50.
     assert track["appearance_frames"] == 50
     assert track["appearance_n"] == 50 // FootballAnalyzer.APPEARANCE_EVERY
+
+
+# ── Comportamiento colectivo ────────────────────────────────────────────
+def _calibrar_siete(analyzer):
+    """Calibra el analizador contra un campo de fútbol 7 con una homografía conocida."""
+    import numpy as np
+
+    from fcopilot.pitch import PITCH_7
+
+    puntos = PITCH_7.keypoints()
+    H = np.array([[9.0, 1.4, 140.0], [0.0, 7.5, 70.0], [0.0, 0.0035, 1.0]])
+
+    def proyectar(p):
+        v = H @ np.array([p[0], p[1], 1.0])
+        return [v[0] / v[2], v[1] / v[2]]
+
+    nombres = ["esquina_izq_arriba", "esquina_der_abajo",
+               "esquina_der_arriba", "esquina_izq_abajo"]
+    analyzer.calibrate_from_landmarks({n: proyectar(puntos[n]) for n in nombres}, "futbol_7")
+
+
+def _frame(equipo, posiciones):
+    """Un frame ya procesado, como lo devuelve `_process_player`."""
+    return [
+        {"track_id": i, "team": equipo, "world_pos": [x, y]}
+        for i, (x, y) in enumerate(posiciones, start=1)
+    ]
+
+
+def test_sin_calibrar_no_se_acumula_nada_colectivo(analyzer):
+    """Una amplitud en píxeles no se compara con nada, ni con otro partido.
+
+    Guardarla sería guardar un número que alguien leería después como metros.
+    """
+    analyzer._accumulate_shape(1.0, 0.2, _frame("team_1", [(10, 10), (20, 20), (30, 10), (20, 5)]))
+    assert analyzer.shape_series is None
+    assert analyzer.get_dashboard(merge=False)["collective"] is None
+
+
+def test_con_calibracion_se_mide_la_forma_del_bloque(analyzer):
+    _calibrar_siete(analyzer)
+    ancho = [(20.0, 4.0), (20.0, 36.0), (30.0, 8.0), (30.0, 32.0)]
+    for i in range(10):
+        analyzer._accumulate_shape(i * 0.2, 0.2, _frame("team_1", ancho))
+
+    colectivo = analyzer.get_dashboard(merge=False)["collective"]
+    assert colectivo is not None
+    forma = colectivo["teams"]["team_1"]["shape"]
+    assert forma["width_m"]["avg"] == pytest.approx(32.0, abs=0.1)
+    assert forma["length_m"]["avg"] == pytest.approx(10.0, abs=0.1)
+
+
+def test_un_jugador_sin_equipo_no_estira_el_bloque_de_nadie(analyzer):
+    """Meterlo en un equipo al azar lo estiraría hasta el otro lado del campo."""
+    _calibrar_siete(analyzer)
+    jugadores = _frame("team_1", [(20.0, 10.0), (22.0, 20.0), (24.0, 15.0), (26.0, 25.0)])
+    jugadores.append({"track_id": 99, "team": "unknown", "world_pos": [58.0, 38.0]})
+
+    analyzer._accumulate_shape(0.0, 0.2, jugadores)
+
+    forma = analyzer.shape_series.summary()["teams"]["team_1"]["shape"]
+    assert forma["length_m"]["max"] == pytest.approx(6.0, abs=0.1)
+
+
+def test_la_ocupacion_de_zonas_usa_el_campo_con_el_que_se_calibro(analyzer):
+    _calibrar_siete(analyzer)
+    for i in range(5):
+        analyzer._accumulate_shape(
+            i * 1.0, 1.0, _frame("team_1", [(5.0, 4.0), (6.0, 5.0), (7.0, 3.0), (8.0, 6.0)])
+        )
+
+    ocupacion = analyzer.shape_series.summary()["teams"]["team_1"]["occupancy"]
+    assert ocupacion["zones"]["tercio_1|banda_1"]["pct"] == pytest.approx(100.0)
+    assert len(ocupacion["zones"]) == 15
+
+
+def test_el_panel_dice_en_que_campo_se_jugo(analyzer):
+    _calibrar_siete(analyzer)
+    panel = analyzer.get_dashboard(merge=False)
+    assert panel["pitch"]["name"] == "futbol_7"
+    assert panel["pitch"]["source"] == "habitual"
+
+
+def test_reiniciar_borra_lo_colectivo(analyzer):
+    _calibrar_siete(analyzer)
+    analyzer._accumulate_shape(0.0, 0.2, _frame("team_1", [(20, 10), (22, 20), (24, 15), (26, 25)]))
+    assert analyzer.shape_series is not None
+
+    analyzer.reset()
+
+    assert analyzer.shape_series is None
+
+
+def test_una_sesion_restaurada_conserva_lo_colectivo(analyzer, fake_yolo):
+    """Lo físico sobrevivía al reinicio y lo colectivo no: media pestaña se perdía."""
+    _calibrar_siete(analyzer)
+    for i in range(10):
+        analyzer._accumulate_shape(
+            i * 1.0, 1.0,
+            _frame("team_1", [(20.0, 4.0), (20.0, 36.0), (30.0, 8.0), (30.0, 32.0)]),
+        )
+    esperado = analyzer.shape_series.summary()
+
+    restaurado = FootballAnalyzer({"tracker_type": "simple", "detection_mode": "normal"})
+    restaurado.load_state(analyzer.serialize_state())
+
+    assert restaurado.shape_series is not None
+    assert restaurado.shape_series.summary() == esperado
+    assert restaurado.get_dashboard(merge=False)["collective"] is not None

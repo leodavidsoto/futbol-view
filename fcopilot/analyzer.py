@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from fcopilot.collective import ShapeSeries, ZoneGrid
 from fcopilot.config import default_runtime_config, merge_config
 from fcopilot.detection import Detector
 from fcopilot.geometry import (
@@ -126,6 +127,9 @@ class FootballAnalyzer:
         self.frames_with_ball = 0
         #: Campo con el que se calibró, si se usó una plantilla.
         self.pitch: Optional[PitchSpec] = None
+        #: Forma del bloque a lo largo del partido. Se crea al primer frame
+        #: calibrado: sin metros no hay nada colectivo que medir.
+        self.shape_series: Optional[ShapeSeries] = None
         self.ball_positions: List[Dict[str, float]] = []
         self.ball_last_seen: Optional[int] = None
         self.possession = PossessionTracker()
@@ -380,6 +384,8 @@ class FootballAnalyzer:
             ]
             classify_ms = (time.perf_counter() - classify_start) * 1000
 
+            self._accumulate_shape(t, dt, players_out)
+
             ball_start = time.perf_counter()
             ball_out = self._process_ball(ball_candidates, players_out, dt)
             ball_ms = (time.perf_counter() - ball_start) * 1000
@@ -516,6 +522,35 @@ class FootballAnalyzer:
         n = track.get("appearance_n", 1)
         track["appearance"] = (acumulado * n + descriptor) / (n + 1)
         track["appearance_n"] = n + 1
+
+    def _accumulate_shape(self, t: float, dt: float, players_out: List[Dict[str, Any]]) -> None:
+        """Acumula la forma del bloque de cada equipo, si se puede medir.
+
+        **Sin calibración no se acumula nada.** La amplitud de un equipo en
+        píxeles no se compara con nada —ni con otro partido ni con un valor de
+        referencia—, así que guardarla sería guardar un número que después
+        alguien leería como metros. Cuando no hay homografía, la sección
+        colectiva del panel no existe, que es lo honesto.
+
+        Los jugadores sin equipo asignado quedan fuera: meterlos en un bloque al
+        azar estiraría la forma de ese equipo hasta el otro lado del campo.
+        """
+        if not self.is_calibrated or dt <= 0:
+            return
+        por_equipo: Dict[str, List[Tuple[float, float]]] = {}
+        for jugador in players_out:
+            equipo = jugador.get("team", "unknown")
+            mundo = jugador.get("world_pos")
+            if equipo == "unknown" or not mundo:
+                continue
+            por_equipo.setdefault(equipo, []).append((float(mundo[0]), float(mundo[1])))
+        if not por_equipo:
+            return
+        if self.shape_series is None:
+            self.shape_series = ShapeSeries(
+                ZoneGrid(self.pitch) if self.pitch else None
+            )
+        self.shape_series.add(t, dt, por_equipo)
 
     def _build_tracklet(self, tid: int, track: Dict[str, Any]) -> Optional[Tracklet]:
         """Convierte un track del analizador en un candidato a fusión.
@@ -783,7 +818,14 @@ class FootballAnalyzer:
                 pitch_name=self.pitch.name if self.pitch else None,
                 pitch_source=self.pitch.source if self.pitch else None,
             )
-        return build_dashboard(informe, calidad, config)
+        panel = build_dashboard(informe, calidad, config)
+        # La sección colectiva no se rellena con ceros cuando no se pudo medir:
+        # `None` dice «no consta» y el cliente sabe que ahí no hay pestaña.
+        panel["collective"] = (
+            self.shape_series.summary() if self.shape_series is not None else None
+        )
+        panel["pitch"] = self.pitch.as_dict() if self.pitch else None
+        return panel
 
     def public_config(self) -> Dict[str, Any]:
         return {
@@ -802,6 +844,7 @@ class FootballAnalyzer:
         self.tracks = {}
         self.last_merge = None
         self.frames_with_ball = 0
+        self.shape_series = None
         self.ball_positions = []
         self.ball_last_seen = None
         self.frame_count = 0
@@ -938,6 +981,9 @@ class FootballAnalyzer:
                 # pierde el campo: el panel decía "calibrado" y "sin campo" a la
                 # vez, y las posiciones dejaban de poder situarse en un plano.
                 "pitch": self.pitch.name if self.pitch else None,
+                "shape_series": (
+                    self.shape_series.to_state() if self.shape_series is not None else None
+                ),
                 "frames_with_ball": self.frames_with_ball,
                 "elapsed_s": self.elapsed_s,
                 "last_t": self._last_t,
@@ -980,6 +1026,12 @@ class FootballAnalyzer:
             # restauración: se pierde la etiqueta, no la sesión.
             self.pitch = PITCHES.get(nombre_campo) if nombre_campo else None
             self.frames_with_ball = int(data.get("frames_with_ball", 0) or 0)
+            forma = data.get("shape_series")
+            self.shape_series = (
+                ShapeSeries.from_state(forma, ZoneGrid(self.pitch) if self.pitch else None)
+                if forma
+                else None
+            )
             self.elapsed_s = float(data.get("elapsed_s", 0.0))
             self._last_t = data.get("last_t")
             self._t_origin = 0.0 if self._last_t is not None else None

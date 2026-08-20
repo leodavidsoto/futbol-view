@@ -10,6 +10,16 @@ El backend (`football_copilot_v2_backend.py`) es una capa fina sobre estos
 módulos: detecta, trackea y delega todas las métricas aquí.
 """
 
+from fcopilot.collective import (
+    CORRIDORS,
+    THIRDS,
+    CollectiveError,
+    Occupancy,
+    ShapeSeries,
+    ZoneGrid,
+    line_summary,
+    team_shape,
+)
 from fcopilot.config import (
     ALLOWED_DET_MODES,
     ALLOWED_MANUAL_TEAMS,
@@ -69,7 +79,9 @@ __all__ = [
     "band_for_speed",
     "build_dashboard",
     "build_report",
+    "CollectiveError",
     "ColorTeamClassifier",
+    "CORRIDORS",
     "DashboardConfig",
     "DEFAULT_PITCH",
     "default_runtime_config",
@@ -82,8 +94,10 @@ __all__ = [
     "homography_from_landmarks",
     "KinematicsConfig",
     "landmarks_for_calibration",
+    "line_summary",
     "LoadConfig",
     "merge_config",
+    "Occupancy",
     "perspective_transform_point",
     "PitchError",
     "PITCHES",
@@ -94,15 +108,19 @@ __all__ = [
     "Quality",
     "Sample",
     "scaled_pitch",
+    "ShapeSeries",
     "SimpleCentroidTracker",
     "SPEED_BANDS",
     "SPEED_ZONES",
     "SPRINT_KMH",
     "SquadLoad",
+    "team_shape",
+    "THIRDS",
     "TIME_SOURCE_CLOCK",
     "TIME_SOURCE_VIDEO",
     "TIME_SOURCES",
     "TimeBaseError",
+    "ZoneGrid",
 ]
 
 __version__ = "3.0.0"
