@@ -12,38 +12,52 @@
  *  Mini-mapa, Barra posesión canvas, Slider radio círculos, Longitud trail
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+
+import { api, wsStreamUrl } from "./lib/api.js";
+import { findFrameAtTime, parseNdjsonChunk, summarizeFrame } from "./lib/frames.js";
+import { TEAM_COLORS, fmtDistance, fmtTime, speedColor } from "./lib/format.js";
+import { getSessionId, resetSessionId } from "./lib/session.js";
+import { canvasPointFromEvent, findPlayerAt as findPlayerAtPoint } from "./lib/interaction.js";
+import { drawScene } from "./render/scene.js";
+import {
+  FlowBadge,
+  ModelCard,
+  PlayerCard,
+  PossessionBar,
+  Section,
+  StatRow,
+  TeamPicker,
+  ToggleRow,
+} from "./components/index.jsx";
+import { styles } from "./styles.js";
+import Dashboard from "./dashboard/Dashboard.jsx";
 
 // ─── CONFIG ────────────────────────────────────────────────────
-const DEFAULT_API_URL = "http://localhost:8000";
-const API_URL        = (import.meta.env.VITE_API_URL || DEFAULT_API_URL).replace(/\/$/, "");
-const WS_URL         = `${(import.meta.env.VITE_WS_URL || API_URL.replace(/^http/, "ws")).replace(/\/$/, "")}/ws/stream`;
 const FRAME_RATE_MS = 80;
-const TEAM_COLORS   = { team_1: "#00ff88", team_2: "#ff3355", unknown: "#aaaaaa" };
-const BALL_COLOR    = "#ffdd00";
+//: Tope de frames guardados en memoria (~6 min a 3 fps efectivos).
+const MAX_BUFFERED_FRAMES = 12000;
 
 // Modos del flujo principal
 // "idle" → "loading" → "detecting" → "preview" → "analyzing" → "done"
 
 // ─── HELPERS ───────────────────────────────────────────────────
-function hexToRgba(hex, alpha) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-function fmtTime(sec) {
-  const m = Math.floor((sec || 0) / 60);
-  const s = Math.floor((sec || 0) % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
 function logClientError(scope, error) {
   console.debug(`[football-copilot] ${scope}`, error);
 }
 
 // ─── MAIN COMPONENT ────────────────────────────────────────────
 export default function App() {
+  /**
+   * Qué vista se está mirando.
+   *
+   * `analisis` es la consola de siempre: cuarenta controles para afinar el
+   * sistema. `panel` es la vista de operación del cuerpo técnico, que no tiene
+   * ni un ajuste. Son públicos distintos y mezclarlos era lo que hacía que el
+   * panel no existiera: no hay hueco para una tabla de decisiones al lado de
+   * un slider de umbral de confianza.
+   */
+  const [view, setView] = useState("analisis");
   // ── Flujo ──────────────────────────────────────────────────
   const [mode, setMode]               = useState("video"); // "video"|"webcam"
   const [flowStep, setFlowStep]       = useState("idle");  // ver descripción arriba
@@ -99,6 +113,11 @@ export default function App() {
   const [detTeamClf,        setDetTeamClf]        = useState("grass_kmeans");
   const [detOsnetAvail,     setDetOsnetAvail]     = useState(false);
 
+  // ── Errores visibles y sesión ──────────────────────────────
+  const [analysisError,     setAnalysisError]     = useState(null);
+  const [backendError,      setBackendError]      = useState(null);
+  const [sessionId,         setSessionId]         = useState(() => getSessionId());
+
   // ── Refs ───────────────────────────────────────────────────
   const canvasRef              = useRef(null);
   const videoRef               = useRef(null);
@@ -115,6 +134,15 @@ export default function App() {
   const posOverridesRef        = useRef({});     // { [track_id]: { x, y } } – posiciones movidas manualmente
   const circleRadiusRef        = useRef(22);
   const calibratingRef         = useRef(false);  // ref para evitar stale closure en handlers
+  const videoUrlRef            = useRef(null);   // object URL del vídeo cargado
+
+  // Liberar el object URL: sin esto, cada vídeo cargado quedaba retenido en memoria.
+  const revokeVideoUrl = useCallback(() => {
+    if (videoUrlRef.current) {
+      URL.revokeObjectURL(videoUrlRef.current);
+      videoUrlRef.current = null;
+    }
+  }, []);
 
   useEffect(() => { teamOverridesRef.current  = playerTeamOverrides; }, [playerTeamOverrides]);
   useEffect(() => { analysisPausedRef.current = analysisPaused;      }, [analysisPaused]);
@@ -123,8 +151,7 @@ export default function App() {
 
   // Cargar config del backend al iniciar
   useEffect(() => {
-    fetch(`${API_URL}/api/config`)
-      .then(r => r.json())
+    api.getConfig()
       .then(c => {
         setDetConf(c.confidence ?? 0.10);
         setDetImgsz(c.imgsz ?? 1280);
@@ -139,14 +166,20 @@ export default function App() {
         setDetTeamClf(c.team_classifier ?? "grass_kmeans");
         setDetOsnetAvail(c.osnet_available ?? false);
       })
-      .catch(error => { logClientError("config load failed", error); });
+      .catch(error => {
+        logClientError("config load failed", error);
+        setBackendError(error.message || "No se pudo conectar con el backend");
+      });
+    api.getCalibration()
+      .then(c => setIsCalibrated(Boolean(c.calibrated)))
+      .catch(error => { logClientError("calibration load failed", error); });
   }, []);
 
   const postConfig = useCallback((patch) => {
-    fetch(`${API_URL}/api/config`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }).catch(error => { logClientError("config update failed", error); });
+    api.setConfig(patch).catch(error => {
+      logClientError("config update failed", error);
+      setBackendError(error.message || "No se pudo aplicar la configuración");
+    });
   }, []);
 
   // ─────────────────────────────────────────────────────────
@@ -154,281 +187,17 @@ export default function App() {
   // ─────────────────────────────────────────────────────────
   const render = useCallback((data, canvas) => {
     if (!canvas || !data) return;
-    const ctx      = canvas.getContext("2d");
-    const W        = canvas.width;
-    const H        = canvas.height;
-    const overrides = teamOverridesRef.current;
-    ctx.clearRect(0, 0, W, H);
-
-    // ── Barra de posesión (top) ────────────────────────────
-    if (showPossessionBar && data.ball?.possession_pct) {
-      const { team_1 = 0, team_2 = 0 } = data.ball.possession_pct;
-      const total = (team_1 + team_2) || 1;
-      const p1    = team_1 / total;
-      ctx.fillStyle = TEAM_COLORS.team_1;
-      ctx.fillRect(0, 0, W * p1, 5);
-      ctx.fillStyle = TEAM_COLORS.team_2;
-      ctx.fillRect(W * p1, 0, W * (1 - p1), 5);
-    }
-
-    // ── Heatmap layer ──────────────────────────────────────
-    if (showHeatmap && data.players) {
-      data.players.forEach(p => {
-        const team  = overrides[p.track_id] || p.team;
-        const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
-        (p.trail || []).forEach((pt, i, arr) => {
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
-          ctx.fillStyle = hexToRgba(color, (i / arr.length) * 0.28);
-          ctx.fill();
-        });
-      });
-    }
-
-    // ── Bounding boxes ─────────────────────────────────────
-    if (showBBoxes && data.players) {
-      data.players.forEach(p => {
-        const [x1, y1, x2, y2] = p.bbox;
-        const team  = overrides[p.track_id] || p.team;
-        const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
-        ctx.strokeStyle = hexToRgba(color, 0.45);
-        ctx.lineWidth   = 1;
-        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-      });
-    }
-    if (showBBoxes && data.ball?.bbox) {
-      const [x1, y1, x2, y2] = data.ball.bbox;
-      ctx.strokeStyle = hexToRgba(BALL_COLOR, 0.6);
-      ctx.lineWidth   = 1;
-      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-    }
-
-    // ── Trail de pelota ────────────────────────────────────
-    if (showTrails && data.ball?.trail?.length > 1) {
-      const trail = data.ball.trail.slice(-trailLength);
-      ctx.beginPath();
-      ctx.moveTo(trail[0].x, trail[0].y);
-      trail.forEach(pt => ctx.lineTo(pt.x, pt.y));
-      ctx.strokeStyle = hexToRgba(BALL_COLOR, 0.35);
-      ctx.lineWidth   = 2.5;
-      ctx.lineJoin    = "round";
-      ctx.stroke();
-      trail.forEach((pt, i) => {
-        const t = i / trail.length;
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 2 + t * 5, 0, Math.PI * 2);
-        ctx.fillStyle = hexToRgba(BALL_COLOR, 0.15 + t * 0.65);
-        ctx.fill();
-      });
-    }
-
-    // ── Jugadores ──────────────────────────────────────────
-    if (data.players) {
-      data.players.forEach(p => {
-        // Posición: override manual tiene prioridad sobre la del backend
-        const posOv      = posOverridesRef.current[p.track_id];
-        const [cx, cy]   = posOv ? [posOv.x, posOv.y] : p.center;
-        const team       = overrides[p.track_id] || p.team;
-        const color      = TEAM_COLORS[team] || TEAM_COLORS.unknown;
-        const isSelected = teamPickerPlayer?.track_id === p.track_id;
-        const isDragging = draggingRef.current?.track_id === p.track_id && draggingRef.current?.moved;
-        const r          = circleRadius;
-
-        // Anillo exterior de arrastre (punteado, radio mayor)
-        if (isDragging) {
-          ctx.setLineDash([5, 3]);
-          ctx.beginPath();
-          ctx.arc(cx, cy, r + 10, 0, Math.PI * 2);
-          ctx.strokeStyle = hexToRgba(color, 0.7);
-          ctx.lineWidth   = 1.5;
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
-
-        // Halo glow
-        ctx.shadowColor = color;
-        ctx.shadowBlur  = isDragging ? 35 : isSelected ? 28 : 12;
-
-        // Círculo exterior
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        ctx.strokeStyle = color;
-        ctx.lineWidth   = isDragging ? 3.5 : isSelected ? 4 : 2.5;
-        ctx.stroke();
-        ctx.fillStyle   = hexToRgba(color, isDragging ? 0.28 : 0.15);
-        ctx.fill();
-
-        ctx.shadowBlur = 0;
-
-        // Punto central
-        ctx.beginPath();
-        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.fill();
-
-        // Nombre (encima del círculo)
-        if (showNames) {
-          const name = playerNames[p.track_id] || p.name || `#${p.track_id}`;
-          ctx.font         = `bold 12px 'Segoe UI', Arial, sans-serif`;
-          ctx.textAlign    = "center";
-          ctx.textBaseline = "bottom";
-          const tw = ctx.measureText(name).width;
-          ctx.fillStyle = "rgba(0,0,0,0.65)";
-          ctx.fillRect(cx - tw / 2 - 4, cy - r - 18, tw + 8, 15);
-          ctx.fillStyle = color;
-          ctx.fillText(name, cx, cy - r - 4);
-        }
-
-        // Velocidad (debajo)
-        if (showSpeed && p.speed_kmh > 0.5) {
-          ctx.font         = "10px monospace";
-          ctx.fillStyle    = "rgba(255,255,255,0.75)";
-          ctx.textAlign    = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(`${p.speed_kmh} km/h`, cx, cy + r + 4);
-        }
-
-        // Distancia (debajo de velocidad)
-        if (showDistance && p.total_dist_m > 0) {
-          const yOff = showSpeed && p.speed_kmh > 0.5 ? r + 16 : r + 4;
-          ctx.font         = "9px monospace";
-          ctx.fillStyle    = "rgba(200,200,200,0.55)";
-          ctx.textAlign    = "center";
-          ctx.textBaseline = "top";
-          ctx.fillText(`${p.total_dist_m} m`, cx, cy + yOff);
-        }
-
-        // Trail del jugador (si trails activo)
-        if (showTrails && p.trail?.length > 1) {
-          const trail = p.trail.slice(-trailLength);
-          trail.forEach((pt, i) => {
-            const alpha = (i / trail.length) * 0.35;
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
-            ctx.fillStyle = hexToRgba(color, alpha);
-            ctx.fill();
-          });
-        }
-      });
-    }
-
-    // ── Pelota ─────────────────────────────────────────────
-    if (data.ball) {
-      const [bx, by] = data.ball.center;
-      ctx.shadowColor = BALL_COLOR;
-      ctx.shadowBlur  = 22;
-      ctx.beginPath();
-      ctx.arc(bx, by, 13, 0, Math.PI * 2);
-      ctx.fillStyle   = BALL_COLOR;
-      ctx.globalAlpha = 0.95;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur  = 0;
-      ctx.font         = "bold 11px Arial";
-      ctx.fillStyle    = "#000";
-      ctx.textAlign    = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("⚽", bx, by);
-    }
-
-    // ── Mini-mapa ──────────────────────────────────────────
-    if (showMiniMap && data.players?.length > 0) {
-      const mw = 160, mh = 96;
-      const mx = W - mw - 10, my = H - mh - 10;
-
-      // Fondo y campo
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.beginPath();
-      ctx.roundRect(mx - 4, my - 4, mw + 8, mh + 8, 6);
-      ctx.fill();
-      ctx.fillStyle = "#1a4d1a";
-      ctx.fillRect(mx, my, mw, mh);
-
-      // Líneas del campo
-      ctx.strokeStyle = "rgba(255,255,255,0.3)";
-      ctx.lineWidth   = 0.5;
-      ctx.strokeRect(mx, my, mw, mh);
-      // Línea central
-      ctx.beginPath();
-      ctx.moveTo(mx + mw / 2, my);
-      ctx.lineTo(mx + mw / 2, my + mh);
-      ctx.stroke();
-      // Círculo central
-      ctx.beginPath();
-      ctx.arc(mx + mw / 2, my + mh / 2, mh * 0.18, 0, Math.PI * 2);
-      ctx.stroke();
-      // Áreas
-      const ag = mh * 0.3;
-      ctx.strokeRect(mx, my + (mh - ag) / 2, mw * 0.12, ag);
-      ctx.strokeRect(mx + mw - mw * 0.12, my + (mh - ag) / 2, mw * 0.12, ag);
-
-      // Jugadores — si hay world_pos, usar coordenadas reales del campo
-      const hasWorld = data.players.some(p => p.world_pos);
-      data.players.forEach(p => {
-        const team  = overrides[p.track_id] || p.team;
-        const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
-        let px, py;
-        if (hasWorld && p.world_pos) {
-          // world_pos = [x_metros, y_metros], campo 105x68m
-          px = mx + (p.world_pos[0] / 105) * mw;
-          py = my + (p.world_pos[1] / 68)  * mh;
-        } else {
-          const posOv    = posOverridesRef.current[p.track_id];
-          const [cx, cy] = posOv ? [posOv.x, posOv.y] : p.center;
-          px = mx + (cx / W) * mw;
-          py = my + (cy / H) * mh;
-        }
-        ctx.beginPath();
-        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = color;
-        ctx.shadowColor = color;
-        ctx.shadowBlur  = 4;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      });
-
-      // Pelota
-      if (data.ball) {
-        const [bx, by] = data.ball.center;
-        const bwp = data.ball.world_pos;
-        const px = bwp ? mx + (bwp[0] / 105) * mw : mx + (bx / W) * mw;
-        const py2tmp = bwp ? my + (bwp[1] / 68) * mh : my + (by / H) * mh;
-        const py = py2tmp;
-        ctx.beginPath();
-        ctx.arc(px, py, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = BALL_COLOR;
-        ctx.shadowColor = BALL_COLOR;
-        ctx.shadowBlur  = 5;
-        ctx.fill();
-        ctx.shadowBlur = 0;
-      }
-    }
-    // ── Puntos de calibración (overlay) ────────────────────
-    if (calibrating || calibPoints.length > 0) {
-      const LABELS = ["TL", "TR", "BR", "BL"];
-      const COLORS_CAL = ["#ff4444","#ffaa00","#44ff44","#4488ff"];
-      calibPoints.forEach((pt, i) => {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 9, 0, Math.PI * 2);
-        ctx.fillStyle = COLORS_CAL[i];
-        ctx.globalAlpha = 0.85;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-        ctx.font = "bold 10px monospace";
-        ctx.fillStyle = "#000";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(LABELS[i], pt.x, pt.y);
-      });
-      if (calibrating) {
-        const next = LABELS[calibPoints.length];
-        ctx.font = "bold 13px sans-serif";
-        ctx.fillStyle = COLORS_CAL[calibPoints.length] || "#fff";
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
-        ctx.fillText(`Click → ${next} (${calibPoints.length}/4)`, 12, 12);
-      }
-    }
+    drawScene(canvas.getContext("2d"), canvas, data, {
+      overrides:       teamOverridesRef.current,
+      posOverrides:    posOverridesRef.current,
+      playerNames,
+      selectedTrackId: teamPickerPlayer?.track_id ?? null,
+      draggingTrackId: draggingRef.current?.moved ? draggingRef.current.track_id : null,
+      circleRadius, trailLength,
+      showHeatmap, showTrails, showSpeed, showDistance,
+      showBBoxes, showNames, showMiniMap, showPossessionBar,
+      calibrating, calibPoints,
+    });
   }, [
     showHeatmap, showTrails, showSpeed, showDistance,
     showBBoxes, showNames, showMiniMap, showPossessionBar,
@@ -466,15 +235,9 @@ export default function App() {
       // → el círculo vuelve a seguir al jugador según el tracker del backend
       posOverridesRef.current = {};
 
-      const frames = allFramesRef.current;
-      if (!frames.length) return;
-      const t = video.currentTime;
-      let best = frames[0], md = Math.abs((best.video_time ?? 0) - t);
-      for (const f of frames) {
-        const d = Math.abs((f.video_time ?? 0) - t);
-        if (d < md) { md = d; best = f; }
-      }
-      latestDataRef.current = best;
+      // Búsqueda binaria: los frames llegan ordenados por `video_time`.
+      const best = findFrameAtTime(allFramesRef.current, video.currentTime);
+      if (best) latestDataRef.current = best;
     };
     const onMeta  = () => setVideoDuration(video.duration || 0);
     const onPlay  = () => setIsVideoPlaying(true);
@@ -494,6 +257,14 @@ export default function App() {
     };
   }, []);
 
+  // Limpieza al desmontar: WebSocket, temporizador de frames y object URL.
+  useEffect(() => () => {
+    clearInterval(frameTimerRef.current);
+    wsRef.current?.close();
+    abortRef.current?.abort();
+    revokeVideoUrl();
+  }, [revokeVideoUrl]);
+
   // ─────────────────────────────────────────────────────────
   // CARGA DE VIDEO → PREVIEW DE PRIMER FRAME
   // ─────────────────────────────────────────────────────────
@@ -510,8 +281,10 @@ export default function App() {
     setPreviewError(false);
 
     const video = videoRef.current;
-    const url   = URL.createObjectURL(file);
-    video.src   = url;
+    revokeVideoUrl();
+    const url = URL.createObjectURL(file);
+    videoUrlRef.current = url;
+    video.src = url;
 
     // Esperar a que el video esté listo
     if (video.readyState < 3) {
@@ -523,7 +296,7 @@ export default function App() {
 
     // Video listo: el usuario puede navegar y detectar manualmente
     setFlowStep("preview");
-  }, []);
+  }, [revokeVideoUrl]);
 
   // ─────────────────────────────────────────────────────────
   // DETECTAR JUGADORES EN EL FRAME ACTUAL
@@ -544,19 +317,18 @@ export default function App() {
     off.getContext("2d").drawImage(video, 0, 0, 854, 480);
 
     const blob = await new Promise(res => off.toBlob(res, "image/jpeg", 0.88));
-    const form = new FormData();
-    form.append("frame", blob, "frame.jpg");
+    if (!blob) { setPreviewError(true); setFlowStep("preview"); return; }
 
     try {
-      const res  = await fetch(`${API_URL}/api/preview-frame`, { method: "POST", body: form });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api.previewFrame(blob, video.currentTime || 0);
       setFrameData(data);
       latestDataRef.current = data;
+      setBackendError(null);
       setFlowStep("preview");
     } catch (err) {
-      console.error("Preview frame error:", err);
+      logClientError("preview frame failed", err);
       setPreviewError(true);
+      setBackendError(err.message || "No se pudo analizar el frame");
       setFlowStep("preview");
     }
   }, []);
@@ -596,13 +368,11 @@ export default function App() {
     allFramesRef.current   = [];
     posOverridesRef.current = {};   // limpiar correcciones del preview
 
-    const formData = new FormData();
-    formData.append("file", videoFile);
+    setAnalysisError(null);
+    setBackendError(null);
 
     try {
-      const res    = await fetch(`${API_URL}/api/process-video`, {
-        method: "POST", body: formData, signal: abortRef.current.signal,
-      });
+      const res    = await api.processVideo(videoFile, abortRef.current.signal);
       const reader = res.body.getReader();
       const dec    = new TextDecoder();
       let buf      = "";
@@ -617,25 +387,27 @@ export default function App() {
         const { value, done } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop();
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const data = JSON.parse(line);
-            allFramesRef.current.push(data);
-            uiCount++;
-            if (uiCount % 3 === 0) { setFrameData(data); setProcessedFrames(uiCount); }
-            latestDataRef.current = data;
-          } catch (error) {
-            logClientError("ndjson frame parse failed", error);
-          }
+        const { frames, rest } = parseNdjsonChunk(buf, (error) =>
+          logClientError("ndjson frame parse failed", error));
+        buf = rest;
+
+        for (const data of frames) {
+          // El backend informa de sus fallos dentro del propio stream.
+          if (data.error) { setAnalysisError(data.error); continue; }
+          allFramesRef.current.push(data);
+          if (allFramesRef.current.length > MAX_BUFFERED_FRAMES) allFramesRef.current.shift();
+          uiCount++;
+          if (uiCount % 3 === 0) { setFrameData(data); setProcessedFrames(uiCount); }
+          latestDataRef.current = data;
         }
       }
       const last = allFramesRef.current.at(-1);
       if (last) { setFrameData(last); setProcessedFrames(allFramesRef.current.length); }
     } catch (err) {
-      if (err.name !== "AbortError") console.error("Analysis error:", err);
+      if (err.name !== "AbortError") {
+        logClientError("analysis failed", err);
+        setAnalysisError(err.message || "El análisis falló");
+      }
     } finally {
       setIsProcessing(false);
       setAnalysisPaused(false);
@@ -663,14 +435,16 @@ export default function App() {
   // ─────────────────────────────────────────────────────────
   const connectWS = useCallback(() => {
     if (wsRef.current) wsRef.current.close();
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(wsStreamUrl());
     ws.binaryType = "arraybuffer";
     ws.onopen    = () => setWsStatus("connected");
     ws.onclose   = () => setWsStatus("disconnected");
     ws.onerror   = () => setWsStatus("error");
     ws.onmessage = (event) => {
       try {
-        setFrameData(JSON.parse(event.data));
+        const data = JSON.parse(event.data);
+        if (data.error) { setBackendError(data.error); return; }
+        setFrameData(data);
       } catch (error) {
         logClientError("ws frame parse failed", error);
       }
@@ -707,12 +481,10 @@ export default function App() {
     setPlayerTeamOverrides(prev => ({ ...prev, [trackId]: team }));
     setTeamPickerPlayer(prev => prev ? { ...prev, team } : prev);
     try {
-      await fetch(`${API_URL}/api/player-team`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ track_id: trackId, team }),
-      });
+      await api.setPlayerTeam(trackId, team);
     } catch (error) {
       logClientError("team override save failed", error);
+      setBackendError(error.message || "No se pudo guardar el equipo");
     }
   }, []);
 
@@ -723,41 +495,28 @@ export default function App() {
     if (name) {
       setPlayerNames(prev => ({ ...prev, [track_id]: name }));
       try {
-        await fetch(`${API_URL}/api/player-name`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ track_id, name }),
-        });
+        await api.setPlayerName(track_id, name);
       } catch (error) {
         logClientError("player name save failed", error);
+        setBackendError(error.message || "No se pudo guardar el nombre");
       }
     }
     setTeamPickerPlayer(null);
   }, [teamPickerPlayer, teamPickerName]);
 
-  // ── Helper: coordenadas canvas desde evento mouse ─────────
+  // Coordenadas del canvas desde un evento de ratón, y jugador bajo el cursor.
+  // La conversión y la búsqueda viven en `lib/interaction.js`: son puras y por
+  // tanto probables sin navegador.
   const getCanvasXY = useCallback((e) => {
-    const c    = canvasRef.current;
-    const rect = c.getBoundingClientRect();
-    return {
-      x: (e.clientX - rect.left) * (c.width  / rect.width),
-      y: (e.clientY - rect.top)  * (c.height / rect.height),
-    };
+    const c = canvasRef.current;
+    return canvasPointFromEvent(e, c, c.getBoundingClientRect());
   }, []);
 
-  // ── Helper: jugador más cercano a un punto ─────────────────
-  const findPlayerAt = useCallback((x, y) => {
-    const data = latestDataRef.current;
-    if (!data?.players) return null;
-    const threshold = circleRadiusRef.current + 18;
-    let closest = null, minDist = threshold;
-    data.players.forEach(p => {
-      const posOv    = posOverridesRef.current[p.track_id];
-      const [px, py] = posOv ? [posOv.x, posOv.y] : p.center;
-      const d = Math.hypot(px - x, py - y);
-      if (d < minDist) { minDist = d; closest = p; }
-    });
-    return closest;
-  }, []);
+  const findPlayerAt = useCallback((x, y) => findPlayerAtPoint(
+    latestDataRef.current?.players,
+    x, y,
+    { radius: circleRadiusRef.current, posOverrides: posOverridesRef.current },
+  ), []);
 
   // ── Mouse down: calibración o drag/click ─────────────────
   const handleMouseDown = useCallback((e) => {
@@ -771,15 +530,14 @@ export default function App() {
         if (next.length === 4) {
           // Enviar al backend: esquinas TL, TR, BR, BL → (0,0)(105,0)(105,68)(0,68)
           const worldPts = [[0,0],[105,0],[105,68],[0,68]];
-          fetch(`${API_URL}/api/calibrate`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              img_points:   next.map(p => [p.x, p.y]),
-              world_points: worldPts,
-            }),
-          }).then(() => { setIsCalibrated(true); setCalibrating(false); }).catch(error => {
-            logClientError("field calibration failed", error);
-          });
+          api.calibrateHomography(next.map(p => [p.x, p.y]), worldPts)
+            .then(() => { setIsCalibrated(true); setCalibrating(false); setBackendError(null); })
+            .catch(error => {
+              logClientError("field calibration failed", error);
+              setBackendError(error.message || "Calibración inválida: revisa los 4 puntos");
+              setCalibrating(false);
+              setCalibPoints([]);
+            });
         }
         return next.length <= 4 ? next : prev;
       });
@@ -855,23 +613,29 @@ export default function App() {
   // ─────────────────────────────────────────────────────────
   const exportData = useCallback(async () => {
     try {
-      const res  = await fetch(`${API_URL}/api/export`);
-      const data = await res.json();
+      const data = await api.export();
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
       const a    = document.createElement("a");
-      a.href     = URL.createObjectURL(blob);
+      const url  = URL.createObjectURL(blob);
+      a.href     = url;
       a.download = `partido_${Date.now()}.json`;
       a.click();
+      URL.revokeObjectURL(url);
       setExportStatus("✅ Exportado");
       setTimeout(() => setExportStatus(null), 2500);
-    } catch { setExportStatus("❌ Error"); }
+    } catch (error) {
+      logClientError("export failed", error);
+      setExportStatus("❌ Error");
+    }
   }, []);
 
   // ─────────────────────────────────────────────────────────
   // JSX
   // ─────────────────────────────────────────────────────────
-  const stats = frameData?.stats || {};
-  const ball  = frameData?.ball;
+  const stats   = frameData?.stats || {};
+  const ball    = frameData?.ball;
+  const summary = useMemo(() => summarizeFrame(frameData), [frameData]);
+  const notice  = analysisError || backendError;
 
   return (
     <div style={styles.root}>
@@ -889,9 +653,51 @@ export default function App() {
           {wsStatus === "connected" ? "🟢 Live" : "⚫ Off"}
         </span>
         <span style={styles.fpsBadge}>{fps > 0 ? `${fps} FPS` : ""}</span>
+        <span style={styles.sessionBadge} title="Sesión de análisis: cada pestaña tiene la suya">
+          🔑 {sessionId.slice(0, 10)}
+        </span>
       </div>
 
-      <div style={styles.body}>
+      {/* ── Selector de vista ── */}
+      <div style={styles.viewTabs} role="tablist" aria-label="Vista">
+        {[
+          ["analisis", "🎛️ Análisis", "Consola completa: detección, seguimiento y ajustes"],
+          ["panel", "📋 Panel del DT", "Qué decidir: quién está fundido y quién no corre"],
+        ].map(([clave, etiqueta, ayuda]) => (
+          <button
+            key={clave}
+            role="tab"
+            aria-selected={view === clave}
+            title={ayuda}
+            onClick={() => setView(clave)}
+            style={{
+              ...styles.viewTab,
+              ...(view === clave ? styles.viewTabActive : null),
+            }}
+          >
+            {etiqueta}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Aviso de error del backend / análisis ── */}
+      {notice && (
+        <div style={styles.notice} role="alert">
+          <span>⚠️ {notice}</span>
+          <button
+            style={styles.noticeClose}
+            onClick={() => { setAnalysisError(null); setBackendError(null); }}
+            aria-label="Cerrar aviso"
+          >✕</button>
+        </div>
+      )}
+
+      {view === "panel" && <Dashboard />}
+
+      {/* La consola se oculta, no se desmonta: desmontarla destruiría el
+          elemento de vídeo y cortaría el análisis en curso, así que cambiar de
+          pestaña a mitad de partido perdería el trabajo hecho. */}
+      <div style={{ ...styles.body, display: view === "panel" ? "none" : "flex" }}>
         {/* ── CANVAS AREA ── */}
         <div style={styles.canvasWrap}>
 
@@ -1301,12 +1107,31 @@ export default function App() {
               {exportStatus && <span style={{ color: "#00ff88", fontSize: 11, marginLeft: 8 }}>{exportStatus}</span>}
               <button style={{ ...styles.btnSecondary, marginTop: 6 }}
                 onClick={async () => {
-                  await fetch(`${API_URL}/api/reset`, { method: "POST" });
+                  try { await api.reset(); }
+                  catch (error) { logClientError("reset failed", error); }
                   setFrameData(null); setFlowStep("idle"); setPlayerTeamOverrides({});
-                  setVideoFile(null); allFramesRef.current = [];
-                  if (videoRef.current) videoRef.current.src = "";
+                  setPlayerNames({}); setVideoFile(null); setIsCalibrated(false);
+                  setAnalysisError(null); setBackendError(null);
+                  allFramesRef.current = [];
+                  posOverridesRef.current = {};
+                  revokeVideoUrl();
+                  if (videoRef.current) videoRef.current.removeAttribute("src");
                 }}
               >🔄 Reset</button>
+              <button
+                style={{ ...styles.btnSecondary, marginTop: 6 }}
+                title="Descarta la sesión actual del backend y empieza una nueva y vacía"
+                onClick={() => {
+                  setSessionId(resetSessionId());
+                  setFrameData(null); setFlowStep("idle"); setPlayerTeamOverrides({});
+                  setPlayerNames({}); setVideoFile(null); setIsCalibrated(false);
+                  setAnalysisError(null); setBackendError(null);
+                  allFramesRef.current = [];
+                  posOverridesRef.current = {};
+                  revokeVideoUrl();
+                  if (videoRef.current) videoRef.current.removeAttribute("src");
+                }}
+              >🆕 Nueva sesión</button>
               {videoFile && (
                 <button
                   style={{ ...styles.btnSecondary, marginTop: 6,
@@ -1423,7 +1248,10 @@ export default function App() {
               <StatRow label="🟢 Equipo 1"     value={stats.team_1_count  || 0} color={TEAM_COLORS.team_1} />
               <StatRow label="🔴 Equipo 2"     value={stats.team_2_count  || 0} color={TEAM_COLORS.team_2} />
               <StatRow label="🧠 Clasificador" value={stats.classifier_ready ? "✅ Listo" : "⏳ Aprendiendo…"} />
+              <StatRow label="🛰️ Tracker"      value={stats.tracker || "—"} />
+              <StatRow label="🏟️ Campo"        value={stats.calibrated ? "✅ Calibrado" : "⚠️ Escala px/m"} />
               <StatRow label="🎞️ Frames proc." value={processedFrames} />
+              <StatRow label="⏱️ Tiempo analiz." value={fmtTime(stats.elapsed_s || 0)} />
               <StatRow label="⚡ FPS"          value={fps > 0 ? `${fps} fps` : "—"} />
               {ball && (
                 <div style={{ marginTop: 8 }}>
@@ -1433,8 +1261,25 @@ export default function App() {
                     <span style={{ color: TEAM_COLORS.team_1, fontSize: 12, fontWeight: 700 }}>{possession.team_1 || 0}%</span>
                     <span style={{ color: TEAM_COLORS.team_2, fontSize: 12, fontWeight: 700 }}>{possession.team_2 || 0}%</span>
                   </div>
+                  {frameData?.possession?.changes > 0 && (
+                    <div style={{ color: "#666", fontSize: 10, marginTop: 4 }}>
+                      {frameData.possession.changes} cambios de posesión
+                    </div>
+                  )}
                 </div>
               )}
+            </Section>
+
+            <Section title="🏅 Rendimiento en pista">
+              <StatRow label="🛣️ Distancia total" value={fmtDistance(summary.totalDistance)} />
+              <StatRow label="💨 Punta actual"    value={`${summary.topSpeed.toFixed(1)} km/h`}
+                color={speedColor(summary.topSpeed)} />
+              <StatRow label="🔥 Sprints"         value={summary.sprints} />
+              <p style={{ color: "#555", fontSize: 10, marginTop: 6, lineHeight: 1.4 }}>
+                {stats.calibrated
+                  ? "Métricas en metros reales (campo calibrado)."
+                  : "Métricas estimadas por escala px/m: calibra el campo para valores reales."}
+              </p>
             </Section>
 
             <Section title="🏃 Jugadores" scroll>
@@ -1462,359 +1307,3 @@ export default function App() {
   );
 }
 
-// ─── FLOW BADGE ────────────────────────────────────────────────
-const FLOW_LABELS = {
-  idle:      { text: "Esperando",         color: "#444",    bg: "#1a1a1a" },
-  loading:   { text: "Cargando…",         color: "#aaa",    bg: "#1a1a2a" },
-  detecting: { text: "Detectando…",       color: "#ffdd00", bg: "#2a2a00" },
-  preview:   { text: "Vista previa",      color: "#ffaa00", bg: "#2a1a00" },
-  analyzing: { text: "Analizando…",       color: "#00ccff", bg: "#001a2a" },
-  done:      { text: "Análisis completo", color: "#00ff88", bg: "#001a0a" },
-};
-function FlowBadge({ step }) {
-  const { text, color, bg } = FLOW_LABELS[step] || FLOW_LABELS.idle;
-  return (
-    <span style={{ padding: "2px 10px", borderRadius: 10, fontSize: 12, background: bg, color }}>
-      {text}
-    </span>
-  );
-}
-
-// ─── TEAM PICKER POPUP ─────────────────────────────────────────
-function TeamPicker({ player, name, onNameChange, currentTeam, onTeamSelect, onSave, onClose }) {
-  const [cx, cy] = player.center;
-  return (
-    <div style={{
-      position: "absolute",
-      left: Math.min(cx + 28, 630), top: Math.max(cy - 95, 8),
-      background: "#0f0f20", border: "1px solid #2a2a40",
-      borderRadius: 10, padding: "12px 14px",
-      zIndex: 20, minWidth: 220,
-      boxShadow: "0 8px 30px rgba(0,0,0,0.85)",
-    }}>
-      <div style={{ color: "#555", fontSize: 10, marginBottom: 6, letterSpacing: 1 }}>
-        JUGADOR #{player.track_id}
-      </div>
-
-      <input
-        autoFocus value={name}
-        onChange={e => onNameChange(e.target.value)}
-        onKeyDown={e => { if (e.key === "Enter") onSave(); if (e.key === "Escape") onClose(); }}
-        style={{
-          background: "#1a1a2a", border: "1px solid #333", borderRadius: 5,
-          color: "#eee", padding: "5px 9px", fontSize: 13, outline: "none",
-          width: "100%", boxSizing: "border-box", marginBottom: 10,
-        }}
-        placeholder="Nombre del jugador…"
-      />
-
-      <div style={{ color: "#444", fontSize: 10, marginBottom: 6, letterSpacing: 1 }}>
-        ASIGNAR CÍRCULO / EQUIPO
-      </div>
-      <div style={{ display: "flex", gap: 5, marginBottom: 10 }}>
-        {[
-          { key: "team_1",  label: "🟢 Eq. 1",   color: "#00ff88" },
-          { key: "team_2",  label: "🔴 Eq. 2",   color: "#ff3355" },
-          { key: "unknown", label: "⚫ Ninguno",  color: "#888888" },
-        ].map(({ key, label, color }) => (
-          <button
-            key={key}
-            onClick={() => onTeamSelect(key)}
-            style={{
-              flex: 1, padding: "6px 0", fontSize: 11, fontWeight: 700,
-              cursor: "pointer", borderRadius: 6, color,
-              background: currentTeam === key ? `${color}22` : "#1a1a2a",
-              border: `2px solid ${currentTeam === key ? color : "#2a2a2a"}`,
-            }}
-          >{label}</button>
-        ))}
-      </div>
-
-      <div style={{ display: "flex", gap: 6 }}>
-        <button
-          onClick={onSave}
-          style={{
-            flex: 1, padding: "6px 0", background: "#00ff88", color: "#000",
-            border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 700, fontSize: 12,
-          }}
-        >✓ Guardar</button>
-        <button
-          onClick={onClose}
-          style={{
-            flex: 1, padding: "6px 0", background: "#1a1a2a", color: "#888",
-            border: "1px solid #2a2a2a", borderRadius: 6, cursor: "pointer", fontSize: 12,
-          }}
-        >✕</button>
-      </div>
-    </div>
-  );
-}
-
-// ─── SUB-COMPONENTS ────────────────────────────────────────────
-function Section({ title, children, scroll }) {
-  return (
-    <div style={{ marginBottom: 14 }}>
-      <div style={styles.sectionTitle}>{title}</div>
-      <div style={scroll ? { maxHeight: 210, overflowY: "auto" } : {}}>{children}</div>
-    </div>
-  );
-}
-
-function StatRow({ label, value, color }) {
-  return (
-    <div style={styles.statRow}>
-      <span style={{ color: "#666", fontSize: 12 }}>{label}</span>
-      <span style={{ color: color || "#ddd", fontWeight: 600, fontSize: 13 }}>{value}</span>
-    </div>
-  );
-}
-
-function ToggleRow({ label, value, onChange }) {
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
-      <span style={{ color: "#aaa", fontSize: 12 }}>{label}</span>
-      <div onClick={onChange} style={{
-        width: 34, height: 17, borderRadius: 9, cursor: "pointer",
-        background: value ? "#00ff88" : "#2a2a2a", position: "relative", transition: "background .2s",
-      }}>
-        <div style={{
-          position: "absolute", top: 1.5, left: value ? 17 : 1.5,
-          width: 14, height: 14, borderRadius: "50%",
-          background: "#fff", transition: "left .2s",
-        }} />
-      </div>
-    </div>
-  );
-}
-
-function PlayerCard({ player, name, team, isSelected, onEdit }) {
-  const color = TEAM_COLORS[team] || TEAM_COLORS.unknown;
-  return (
-    <div
-      style={{
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        padding: "4px 7px", marginBottom: 3, borderRadius: 6,
-        background: isSelected ? "#0f1f0f" : "#111118",
-        border: `1px solid ${isSelected ? color : "#1e1e28"}`,
-        cursor: "pointer",
-      }}
-      onClick={onEdit}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-        <div style={{
-          width: 10, height: 10, borderRadius: "50%",
-          background: color, boxShadow: `0 0 5px ${color}66`, flexShrink: 0,
-        }} />
-        <span style={{ color: "#ccc", fontSize: 12 }}>{name || `#${player.track_id}`}</span>
-      </div>
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ color: "#888", fontSize: 10 }}>{player.speed_kmh > 0 ? `${player.speed_kmh} km/h` : ""}</div>
-        <div style={{ color: "#555", fontSize: 10 }}>{player.total_dist_m > 0 ? `${player.total_dist_m} m` : ""}</div>
-      </div>
-    </div>
-  );
-}
-
-function PossessionBar({ t1, t2 }) {
-  const total = (t1 + t2) || 100;
-  const p1    = Math.round(t1 / total * 100);
-  return (
-    <div>
-      <div style={{ display: "flex", height: 14, borderRadius: 7, overflow: "hidden" }}>
-        <div style={{ width: `${p1}%`, background: TEAM_COLORS.team_1, transition: "width .5s" }} />
-        <div style={{ flex: 1, background: TEAM_COLORS.team_2 }} />
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
-        <span style={{ color: TEAM_COLORS.team_1, fontSize: 11 }}>🟢 {p1}%</span>
-        <span style={{ color: TEAM_COLORS.team_2, fontSize: 11 }}>{100 - p1}% 🔴</span>
-      </div>
-    </div>
-  );
-}
-
-function ModelCard({ active, available, title, badge, badgeColor, desc, source, onClick }) {
-  return (
-    <div
-      onClick={available && onClick ? onClick : undefined}
-      style={{
-        padding: "9px 10px", marginBottom: 7, borderRadius: 8,
-        background: active ? "#0a1a0f" : "#0e0e1a",
-        border: `1px solid ${active ? "#00ff8866" : available ? "#1e1e28" : "#2a1a10"}`,
-        cursor: available && onClick ? "pointer" : "default",
-        opacity: available ? 1 : 0.5,
-        transition: "border .15s",
-      }}
-    >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-        <span style={{ color: active ? "#00ff88" : "#ccc", fontWeight: 700, fontSize: 12 }}>{title}</span>
-        <span style={{
-          fontSize: 9, fontWeight: 700, color: badgeColor,
-          background: `${badgeColor}22`, padding: "1px 6px",
-          borderRadius: 5, border: `1px solid ${badgeColor}44`,
-        }}>{badge}</span>
-      </div>
-      <div style={{ color: "#666", fontSize: 10, lineHeight: 1.5, marginBottom: 3 }}>{desc}</div>
-      <div style={{ color: "#333", fontSize: 9 }}>📦 {source}</div>
-      {active && <div style={{ color: "#00ff88", fontSize: 9, marginTop: 3 }}>✓ Activo</div>}
-    </div>
-  );
-}
-
-// ─── STYLES ────────────────────────────────────────────────────
-const styles = {
-  root: {
-    background: "#080810", minHeight: "100vh",
-    fontFamily: "'Segoe UI', Arial, sans-serif",
-    color: "#ddd", display: "flex", flexDirection: "column",
-  },
-  header: {
-    display: "flex", alignItems: "center", gap: 10,
-    padding: "9px 18px", background: "#0d0d1a",
-    borderBottom: "1px solid #1a1a28",
-  },
-  logo:    { fontWeight: 700, fontSize: 17, color: "#00ff88" },
-  version: { color: "#444", fontSize: 11 },
-  badge:   { padding: "2px 9px", borderRadius: 10, fontSize: 12 },
-  fpsBadge:{ color: "#ffdd00", fontSize: 12, marginLeft: "auto", fontFamily: "monospace" },
-  body:    { display: "flex", flex: 1, overflow: "hidden" },
-  canvasWrap: {
-    flex: 1, position: "relative", background: "#050510",
-    display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center",
-    overflow: "hidden",
-  },
-  canvas: {
-    display: "block", maxWidth: "100%", height: "auto",
-    cursor: "crosshair", borderRadius: 3,
-    position: "relative", background: "transparent",
-  },
-  previewBanner: {
-    display: "flex", alignItems: "center", gap: 12,
-    padding: "10px 16px", background: "#1a1500",
-    borderTop: "1px solid #ffdd0033",
-    width: "100%", boxSizing: "border-box", maxWidth: 854,
-    justifyContent: "space-between",
-  },
-  analyzeBtn: {
-    background: "#ffdd00", color: "#000", border: "none",
-    borderRadius: 6, padding: "6px 18px", cursor: "pointer",
-    fontSize: 13, fontWeight: 700, whiteSpace: "nowrap",
-  },
-  detectBtn: {
-    background: "#1a3a5c", color: "#66ccff", border: "1px solid #2255aa",
-    borderRadius: 6, padding: "6px 14px", cursor: "pointer",
-    fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
-  },
-  videoControls: {
-    display: "flex", alignItems: "center", gap: 10,
-    padding: "8px 14px", background: "#0d0d1a",
-    borderTop: "1px solid #1a1a28",
-    width: "100%", boxSizing: "border-box", maxWidth: 854,
-  },
-  playBtn: {
-    background: "#00ff88", color: "#000", border: "none",
-    borderRadius: 6, padding: "5px 14px", cursor: "pointer",
-    fontSize: 16, fontWeight: 700, minWidth: 44,
-  },
-  seekBar:     { flex: 1, cursor: "pointer", accentColor: "#00ff88" },
-  timeDisplay: { color: "#666", fontSize: 11, fontFamily: "monospace", whiteSpace: "nowrap" },
-  analysisBanner: {
-    display: "flex", alignItems: "center", gap: 12,
-    padding: "8px 14px", background: "#061206",
-    borderTop: "1px solid #00ff8822",
-    width: "100%", boxSizing: "border-box", maxWidth: 854,
-    justifyContent: "space-between",
-  },
-  playOverlayBtn: {
-    background: "#00ff88", color: "#000", border: "none",
-    borderRadius: 6, padding: "5px 16px", cursor: "pointer",
-    fontSize: 13, fontWeight: 700, whiteSpace: "nowrap",
-  },
-  processingOverlay: {
-    position: "absolute", inset: 0, background: "rgba(0,0,0,0.65)",
-    display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center", gap: 14,
-  },
-  processingText: { color: "#ddd", fontSize: 15 },
-  spinner: {
-    width: 34, height: 34, border: "3px solid #222",
-    borderTop: "3px solid #00ff88", borderRadius: "50%",
-    animation: "spin 0.8s linear infinite",
-  },
-  // Barra de progreso no bloqueante
-  progressBar: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "7px 14px", background: "#0a0a18",
-    borderTop: "1px solid #1a1a30",
-    width: "100%", boxSizing: "border-box", maxWidth: 854,
-  },
-  miniSpinner: {
-    width: 14, height: 14, border: "2px solid #222",
-    borderTop: "2px solid #00ff88", borderRadius: "50%",
-    animation: "spin 0.8s linear infinite", flexShrink: 0,
-  },
-  pauseBtn: {
-    background: "#ffaa00", color: "#000", border: "none",
-    borderRadius: 5, padding: "4px 12px", cursor: "pointer",
-    fontSize: 12, fontWeight: 700,
-  },
-  resumeBtn: {
-    background: "#00ff88", color: "#000", border: "none",
-    borderRadius: 5, padding: "4px 14px", cursor: "pointer",
-    fontSize: 12, fontWeight: 700,
-  },
-  cancelBtnSm: {
-    background: "#2a0a0a", color: "#ff5555", border: "1px solid #441414",
-    borderRadius: 5, padding: "4px 10px", cursor: "pointer", fontSize: 12,
-  },
-  // Banner de análisis pausado
-  pausedBanner: {
-    display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10,
-    padding: "9px 14px", background: "#1a1400",
-    borderTop: "1px solid #ffaa0033",
-    width: "100%", boxSizing: "border-box", maxWidth: 854,
-  },
-  emptyOverlay: {
-    position: "absolute", inset: 0,
-    display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center",
-  },
-  panel: {
-    width: 300, background: "#0b0b18",
-    borderLeft: "1px solid #1a1a28",
-    padding: "12px 12px", overflowY: "auto",
-    flexShrink: 0,
-  },
-  sectionTitle: {
-    color: "#444", fontSize: 10, fontWeight: 700,
-    textTransform: "uppercase", letterSpacing: 1.2,
-    marginBottom: 7, borderBottom: "1px solid #181828", paddingBottom: 4,
-  },
-  modeRow:     { display: "flex", gap: 5 },
-  modeBtn:     {
-    flex: 1, padding: "5px 0", background: "#111118",
-    border: "1px solid #1e1e28", borderRadius: 6, color: "#666",
-    cursor: "pointer", fontSize: 12,
-  },
-  modeBtnActive: { border: "1px solid #00ff88", color: "#00ff88", background: "#071207" },
-  statRow:       { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 },
-  sliderRow:     { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, marginTop: 2 },
-  subLabel:      { color: "#555", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.8, marginTop: 8, marginBottom: 4 },
-  btnPrimary:    {
-    width: "100%", padding: "7px 0", background: "#00ff88",
-    color: "#000", fontWeight: 700, border: "none",
-    borderRadius: 6, cursor: "pointer", fontSize: 13,
-  },
-  btnSecondary:  {
-    width: "100%", padding: "6px 0", background: "#111118",
-    color: "#888", border: "1px solid #1e1e28",
-    borderRadius: 6, cursor: "pointer", fontSize: 12,
-  },
-};
-
-if (typeof document !== "undefined" && !document.getElementById("fc-spin")) {
-  const s = document.createElement("style");
-  s.id = "fc-spin";
-  s.textContent = "@keyframes spin { to { transform: rotate(360deg); } }";
-  document.head.appendChild(s);
-}

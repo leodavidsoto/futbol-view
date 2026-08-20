@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+venv
+**/node_modules
+**/dist
+**/__pycache__
+**/.pytest_cache
+.session_state
+weights
+worklog
+tests
+*.md
+!requirements_v2.txt

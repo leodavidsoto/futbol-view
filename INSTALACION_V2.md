@@ -1,180 +1,431 @@
-# ⚡ Football Copilot v2 — Instalación y Arranque
+# ⚡ Football Copilot — Instalación y arranque
 
-**Sistema:** macOS · Intel i7 · 16 GB · Sin GPU
+**Referencia de rendimiento:** MacBook Pro 2018 · Intel i7 · 16 GB · sin GPU.
+Funciona igual en Linux; en Windows usa `venv\Scripts\activate`.
+
+---
+
+## 0. La vía rápida: contenedores
+
+Si sólo quieres que funcione, esto levanta el sistema entero sin instalar Python
+ni Node en tu máquina:
+
+```bash
+python3 scripts/fetch_weights.py --dest ./weights   # una sola vez
+docker compose up --build
+```
+
+Cliente en **http://localhost:8080**. La API va detrás del mismo origen, así que
+no hay que tocar CORS.
+
+Los pesos **no van dentro de la imagen**: pesan cientos de megas, cambian de
+versión y no deben quedar congelados en una capa. Se montan como volumen de sólo
+lectura desde `./weights`.
+
+El resto del documento es la instalación manual, que sigue siendo la cómoda para
+desarrollar.
 
 ---
 
 ## 1. Requisitos previos
 
 ```bash
-# Verificar versiones
 python3 --version   # ≥ 3.10
 node --version      # ≥ 18
 npm --version       # ≥ 9
 ```
 
-Si no tienes Python 3.10+:
-```bash
-brew install python@3.11
-```
+Si no tienes Python 3.10+ en macOS: `brew install python@3.11`.
 
 ---
 
-## 2. Backend Python
+## 2. Backend
 
 ```bash
-# Crear entorno virtual (una sola vez)
 python3 -m venv venv
 source venv/bin/activate
 
-# Instalar dependencias v2
 pip install --upgrade pip
+# PyTorch primero, en su rueda de CPU (opcional: sólo hace falta para OSNet)
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements_v2.txt
 
-# Descargar modelo YOLO (primera vez, ~6MB)
-python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt'); print('✅ Modelo OK')"
+# Descargar el modelo YOLO (primera vez)
+python3 -c "from ultralytics import YOLO; YOLO('yolo11x.pt'); print('✅ Modelo OK')"
 
-# Arrancar backend
 python3 football_copilot_v2_backend.py
-# ✅ Escuchando en http://0.0.0.0:8000
-# ✅ Swagger en  http://localhost:8000/docs
+# ✅ http://0.0.0.0:8000  ·  Swagger en http://localhost:8000/docs
 ```
+
+Comprueba qué se ha detectado en tu entorno:
+
+```bash
+curl -s http://localhost:8000/health | python3 -m json.tool
+```
+
+El bloque `capabilities` indica qué hay instalado (`yolo`, `sahi`, `norfair`,
+`bytetrack`, `torch`, `osnet`). Lo que falte se degrada solo: sin Norfair se usa
+ByteTrack, y sin ninguno de los dos, el tracker de centroides incluido. Sólo
+`ultralytics` es imprescindible para detectar: sin él los endpoints de análisis
+responden `503` con el motivo.
 
 ---
 
-## 3. Frontend React
+## 3. Frontend
 
 ```bash
-# En otra terminal, en el mismo directorio
+cd frontend
 npm install
-npm start
-# ✅ Abre automáticamente http://localhost:3000
+npm run dev
+# ✅ http://localhost:5173
 ```
 
-> Si el proyecto ya tiene `FootballCopilot.jsx`, reemplaza las referencias en
-> `App.jsx` con `FootballCopilot_v2.jsx`:
-> ```jsx
-> import FootballCopilotV2 from './FootballCopilot_v2';
-> // ...
-> <FootballCopilotV2 />
-> ```
+Si el backend no está en `localhost:8000`, crea `frontend/.env`:
+
+```bash
+VITE_API_URL=http://mi-servidor:8000
+VITE_WS_URL=ws://mi-servidor:8000
+```
+
+> La interfaz activa es `frontend/src/App.jsx`. El fichero `FootballCopilot_v2.jsx`
+> de la raíz es una versión anterior que se conserva como referencia histórica y
+> no forma parte de la aplicación.
 
 ---
 
 ## 4. Usar el sistema
 
-### Opción A — Video grabado (recomendado para empezar)
+### Opción A — Vídeo grabado (recomendado)
 
-1. Abre http://localhost:3000
-2. Selecciona **📁 Video**
-3. Elige tu `.mp4` del dron o cámara lateral
-4. El backend procesa y transmite resultados frame a frame
+1. Abre http://localhost:5173
+2. Selecciona **📁 Video** y elige tu `.mp4`.
+3. Navega al segundo que quieras y pulsa **🔍 Detectar aquí**.
+4. Corrige equipos y nombres haciendo clic en los círculos.
+5. **▶ Iniciar análisis**: el backend devuelve NDJSON frame a frame.
 
-### Opción B — Cámara en vivo / Drone
+### Opción B — Cámara en vivo / dron
 
-1. Selecciona **📷 Cámara**
-2. El navegador pedirá permiso de cámara → Aceptar
-3. Clic en **🔴 Iniciar Cámara**
-4. Los frames se envían por WebSocket al backend
+1. Selecciona **📷 Cámara** y acepta el permiso del navegador.
+2. Los frames viajan por WebSocket (`/ws/stream`) con el `session_id` de la pestaña.
 
-Para drones DJI via OBS:
-- OBS → Configurar RTMP output → `rtmp://localhost:1935/live/stream`
-- En backend, conectar `cv2.VideoCapture("rtmp://localhost:1935/live/stream")`
+Para drones DJI vía OBS: envía RTMP a `rtmp://localhost:1935/live/stream` y abre
+esa URL con `cv2.VideoCapture` en el backend.
 
 ---
 
-## 5. Calibración de velocidad
+## 5. Calibración del campo
 
-La velocidad se calcula en píxeles/metro. Para calibrarlo con tu cancha:
+> **Lo más rápido: señalar puntos con nombre.** Antes había que saber cuánto
+> mide tu campo y escribir cuatro pares de coordenadas en metros; ahora eliges
+> la plantilla (`futbol_11`, `futbol_7`, `futbol_sala`) y señalas puntos que
+> reconoces —la esquina, el punto central, el frontal del área—. `GET
+> /api/pitches` lista los ~33 puntos de cada campo. Admite más de cuatro, y con
+> más sale mejor: los puntos de un clic traen error y los mínimos cuadrados lo
+> absorben.
+>
+> Las medidas del campo de 11 son de reglamento. **Las de fútbol 7 y sala
+> varían por federación**: las de la plantilla son las más habituales, no una
+> verdad. Si conoces las tuyas, dilas — el informe marca de dónde salen.
 
-1. En el video, mide cuántos píxeles equivalen a 10 metros reales
-2. Llama al endpoint:
+
+**Recomendado:** homografía de 4 puntos desde la interfaz
+(**🏟️ Calibrar campo**). Marca las esquinas en orden — superior izquierda,
+superior derecha, inferior derecha, inferior izquierda — y las posiciones pasan
+a medirse en metros reales.
+
+```bash
+# Equivalente por API
+curl -X POST http://localhost:8000/api/calibrate \
+     -H "Content-Type: application/json" \
+     -H "x-session-id: mi-sesion" \
+     -d '{"img_points": [[120,90],[740,90],[810,430],[50,430]],
+          "world_points": [[0,0],[105,0],[105,68],[0,68]]}'
+```
+
+Alternativa simple, sin corregir la perspectiva:
+
 ```bash
 curl -X POST http://localhost:8000/api/calibrate \
      -H "Content-Type: application/json" \
      -d '{"pixels_per_meter": 12.5}'
 ```
 
-Valor típico para toma aérea de drone: **8–15 px/m** (varía con altura).
+Valor típico en tomas aéreas: **8–15 px/m**. Ten en cuenta que una escala fija
+sobreestima las distancias en el fondo del plano y las infravalora en primer
+plano; la homografía no tiene ese problema.
 
 ---
 
-## 6. Flujo del sistema v2
+## 6. Endpoints
 
-```
-[Video .mp4 / Webcam / Drone RTMP]
-          │
-          ▼
-  [FastAPI Backend v2]
-  │  YOLOv8n → personas (clase 0) + balón (clase 32)
-  │  ByteTrack (supervision) → IDs persistentes
-  │  KMeans clustering → Equipo 1 🟢 / Equipo 2 🔴
-  │  Speed calculator → km/h por jugador
-  │  Possession tracker → % por equipo
-          │  JSON ~12-20 FPS
-          ▼
-  [React Frontend v2]
-  │  Canvas 2D: círculos verde/rojo, nombre, velocidad
-  │  Trail: últimas 20 posiciones con fade
-  │  Heatmap: densidad de posiciones
-  │  Panel: stats, posesión, lista editable
-  │  Botón Export → .json con partido completo
-```
+Ver la tabla completa en el [`README.md`](README.md) o en `/docs`.
+
+Todas las rutas aceptan la cabecera `x-session-id` (o `?session_id=`) para
+trabajar sobre una sesión concreta. Sin ella se usa `default`.
 
 ---
 
-## 7. Endpoints disponibles
+## 7. Ajuste de rendimiento en CPU
 
-| Método | URL | Descripción |
+Todo se cambia en caliente, sin reiniciar, desde el panel **⚙️ Config** o por API:
+
+```bash
+curl -X POST http://localhost:8000/api/config \
+     -H "Content-Type: application/json" \
+     -d '{"imgsz": 640, "detection_mode": "normal", "frame_skip": 3}'
+```
+
+| Ajuste | Efecto |
+|---|---|
+| `imgsz` 1280 → 640 | El mayor ahorro; pierde detecciones lejanas. |
+| `detection_mode: "normal"` | Desactiva SAHI (los tiles multiplican el coste). |
+| `frame_skip` | Analiza 1 de cada `frame_skip + 1` frames. |
+| `augment: false` | El TTA duplica el tiempo por frame. |
+| `model` | `yolo11n.pt` es varias veces más rápido que `yolo11x.pt`. |
+
+`frame_skip` ya **no** distorsiona las métricas: velocidades y distancias se
+calculan sobre el tiempo real del vídeo, no sobre el número de frames vistos.
+
+Rendimiento orientativo en un i7 de 2018 (854×480):
+
+| imgsz | Modo | FPS aproximados |
 |---|---|---|
-| `GET`  | `/health` | Estado del servidor + FPS |
-| `POST` | `/api/process-video` | Subir video (multipart) → NDJSON stream |
-| `WS`   | `/ws/stream` | WebSocket frames JPEG → JSON detecciones |
-| `POST` | `/api/player-name` | `{track_id, name}` — editar nombre |
-| `POST` | `/api/calibrate` | `{pixels_per_meter}` — calibrar velocidad |
-| `GET`  | `/api/export` | Exportar partido completo como JSON |
-| `POST` | `/api/reset` | Reiniciar tracker y estadísticas |
-| `GET`  | `/docs` | Swagger UI interactivo |
+| 1280 | SAHI | 1–3 |
+| 640 | normal | 8–12 |
+| 416 | normal | 15–20 |
 
 ---
 
-## 8. Optimización para i7 2018
+## 8. Clasificación de equipos
 
-Si el FPS es bajo, prueba en orden:
+Tres modos, seleccionables en el panel **🧠 Modelos**:
 
-```python
-# En football_copilot_v2_backend.py
+- `grass_kmeans` *(por defecto)* — KMeans sobre el color de camiseta filtrando
+  el césped. Se entrena solo con muestras de varios frames.
+- `kmeans` — la variante simple, sin filtrar el verde.
+- `osnet` — embeddings de apariencia (requiere PyTorch y los pesos en
+  `weights/`); útil cuando los dos kits tienen colores parecidos.
 
-# 1. Reducir tamaño de entrada YOLO (línea YOLO_IMGSZ)
-YOLO_IMGSZ = 416        # en vez de 640 → ~40% más rápido
+Las etiquetas son estables: `team_1` sigue siendo `team_1` aunque el
+clasificador se reajuste, y cada track conserva su equipo por voto de sus
+últimas observaciones, así que no parpadea al cruzarse dos jugadores.
 
-# 2. Reducir resolución del video antes de procesar
-frame = cv2.resize(frame, (640, 360))
+Si aun así se equivoca, haz clic en el jugador y asígnale el equipo a mano: la
+asignación manual tiene prioridad y sobrevive a `POST /api/reset?soft=true`.
 
-# 3. Procesar 1 de cada 2 frames
-# En /api/process-video, cambiar:
-frame_skip = 1          # procesa frame 1, salta frame 2
+---
+
+## 9. Desarrollo
+
+```bash
+pip install -r requirements-dev.txt && pytest
+cd frontend && npm run lint && npm test && npm run build
 ```
 
-Rendimiento esperado en i7 16GB:
+Ver [`TESTING.md`](TESTING.md).
 
-| Resolución | imgsz | FPS estimado |
+
+---
+
+## 9. Pesos del modelo
+
+Nada funciona sin ellos y hasta ahora nadie los provisionaba: se daban por
+presentes, y en un clon limpio el análisis fallaba con un error de `ultralytics`
+que no decía que faltara un fichero.
+
+```bash
+python3 scripts/fetch_weights.py --dest ./weights     # descarga y verifica
+python3 scripts/fetch_weights.py --dest ./weights --check-only
+python3 scripts/fetch_weights.py --dest ./weights --print-hashes
+```
+
+Luego arranca el backend con `MODEL_ROOT=./weights`.
+
+**Por qué se verifica el hash y no basta con descargar:** un `.pt` es un pickle
+de PyTorch, y cargarlo **ejecuta código**. `MODEL_ROOT` restringe *dónde* puede
+estar el fichero; el hash es lo único que dice *qué* contiene.
+
+La primera vez, `scripts/weights.sha256.json` trae `TODO(config)` en lugar de los
+hashes: nadie puede fijar un hash que no ha calculado. Descarga de una fuente en
+la que confíes, ejecuta `--print-hashes` y pega el resultado. A partir de ahí,
+cualquier cambio del fichero se detecta.
+
+El hash de `yolo11x.pt` ya está fijado: se calculó descargándolo de la release
+oficial `ultralytics/assets v8.3.0` y comprobando que el modelo carga y detecta.
+
+**OSNet** (`osnet_x1_0_imagenet.pth`) no tiene una URL de descarga pública y
+estable que podamos fijar, así que el script no lo descarga: colócalo a mano y
+añade su hash. Sin él, el clasificador de equipos degrada a `grass_kmeans`, que
+es el valor por defecto de todas formas.
+
+---
+
+## 9 bis. Probar el sistema de extremo a extremo
+
+El repositorio no traía ningún vídeo, así que hay un generador:
+
+```bash
+python3 scripts/make_demo_video.py --salida demo.mp4     # 6 s, 150 frames
+```
+
+Construye una panorámica sobre una fotografía real de futbolistas (la que trae
+`ultralytics` en `assets/zidane.jpg`), así que **las personas y las detecciones
+son reales**. Sirve para comprobar que la tubería entera funciona; no sirve para
+medir la exactitud de las métricas, porque quien se mueve es la cámara y no los
+jugadores. Para eso hace falta un partido etiquetado a mano (`ANALISIS.md` §0.7).
+
+Recorrido completo:
+
+```bash
+python3 scripts/fetch_weights.py --dest ./weights
+python3 scripts/make_demo_video.py --salida demo.mp4
+MODEL_ROOT=$PWD/weights python -m uvicorn football_copilot_v2_backend:app --port 8000 &
+curl -s -X POST localhost:8000/api/config -H 'x-session-id: demo' \
+     -H 'content-type: application/json' \
+     -d '{"model":"weights/yolo11x.pt","detection_mode":"normal","tracker_type":"norfair"}'
+curl -s -N -X POST localhost:8000/api/process-video -H 'x-session-id: demo' \
+     -F 'file=@demo.mp4;type=video/mp4' | tail -1
+curl -s localhost:8000/api/report -H 'x-session-id: demo'
+```
+
+En CPU tarda alrededor de un segundo por frame analizado con `yolo11x`; con
+`yolo11n` va mucho más rápido y detecta algo peor.
+
+---
+
+## 9 ter. Probarlo en tu máquina, de principio a fin
+
+Lo que sigue está ejecutado, no supuesto. En un portátil sin GPU, `yolo11x`
+tarda alrededor de un segundo por frame analizado: con `frame_skip` 4 eso son
+unos 5 minutos por cada minuto de vídeo.
+
+```bash
+git clone https://github.com/leodavidsoto/futbol-view
+cd futbol-view
+git checkout claude/futbol-core-metrics-refactor-497jvn
+
+python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements_v2.txt
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu   # opcional, sólo OSNet
+
+python3 scripts/fetch_weights.py --dest ./weights   # descarga y VERIFICA el hash
+python3 football_copilot_v2_backend.py              # → http://localhost:8000
+```
+
+En otra terminal:
+
+```bash
+cd frontend && npm install && npm run dev           # → http://localhost:5173
+```
+
+### Sin vídeo propio a mano
+
+```bash
+python3 scripts/make_demo_video.py --salida demo.mp4 --segundos 10
+```
+
+No es un partido: es una panorámica sobre una fotografía real. Sirve para ver
+que la tubería funciona, no para creerse las métricas.
+
+### La configuración que dio buenos resultados con material real
+
+En **🎛️ Análisis**, o por API. Lo importante es la resolución: con los valores
+por defecto (854×480) los jugadores de una toma elevada desaparecen antes de
+llegar al detector.
+
+```json
+{"detection_mode": "normal", "tracker_type": "norfair", "norfair_dist": 70,
+ "confidence": 0.20, "imgsz": 1280, "frame_skip": 4,
+ "process_width": 1280, "process_height": 720}
+```
+
+Si va demasiado lento, baja `imgsz` a 960 y sube `frame_skip`. Si no detecta
+nada, baja `confidence` antes que ninguna otra cosa.
+
+> **Un modelo específico de fútbol cambia mucho el resultado** en tomas
+> elevadas, mucho más que cualquier ajuste. El que se probó aquí es un `.pt` de
+> terceros de HuggingFace (`mobadam/football-player-detection`), y **cargar un
+> `.pt` ejecuta su código**: no está versionado ni tiene hash fijado en
+> `scripts/weights.sha256.json`. Es una decisión tuya, no un paso de la
+> instalación. Si lo usas, sus clases son `person_class: 1` y `ball_class: 0`.
+
+### El recorrido corto para ver el panel
+
+1. Sube el vídeo y pulsa **Detectar aquí** en un segundo con jugadores.
+2. **Calibra** con la plantilla de tu campo (§5). Si no calibras, el panel te lo
+   dirá y ocultará el semáforo — está pensado así.
+3. Si jugáis en **media cancha**, dibuja la zona de juego: descarta lo que se
+   detecte fuera antes de seguirlo.
+4. **Iniciar análisis**.
+5. Pestaña **📋 Panel del DT**.
+
+### Qué esperar la primera vez, y qué no
+
+- **La posesión probablemente saldrá pobre.** El balón a esa distancia son
+  cuatro píxeles y ningún modelo probado lo ve de forma fiable. El panel te dirá
+  en qué porcentaje de frames se vio y avisará de que la posesión es
+  orientativa. Es la limitación conocida, no un fallo de instalación.
+- **La caída de rendimiento necesita minutos.** Por debajo de 15 minutos
+  jugados no se juzga a nadie, y las tasas por minuto sólo aparecen a partir de
+  30 segundos observados por jugador: extrapolar un minuto desde dos segundos
+  no es medir. Con un clip corto verás «—», y es lo correcto.
+- **Con CPU, el seguimiento fragmenta.** El panel lo mide y te lo dice como
+  «identidades por jugador». La fusión de tracklets corrige buena parte; si el
+  número sigue alto, las cifras de equipo valen y las individuales no.
+
+---
+
+## 10. Variables de entorno
+
+La tabla completa está en `worklog/API/CONTRATO.md`. Las que importan al
+desplegar:
+
+| Variable | Por defecto | Cuándo cambiarla |
 |---|---|---|
-| 854×480    | 640   | ~8-12 FPS    |
-| 640×360    | 416   | ~15-20 FPS   |
-| 640×360    | 320   | ~25-30 FPS   |
+| `API_KEY` | *(vacía)* | **Siempre antes de exponer esto fuera de tu máquina.** Vacía = servicio abierto |
+| `CORS_ALLOW_ORIGINS` | `*` | Igual: con nginx delante, cliente y API comparten origen y puedes cerrarlo |
+| `MODEL_ROOT` | `.` | Debe apuntar al directorio de pesos |
+| `MAX_UPLOAD_MB` | `1024` | Si tus vídeos son más pequeños, bájalo: es superficie de ataque gratis |
+| `MAX_CONCURRENT_ANALYSES` | `WORKER_THREADS` | Análisis simultáneos en todo el servicio |
+| `SESSION_STATE_DIR` | `.session_state` | Debe ser un volumen persistente |
+
+Al arrancar sin `API_KEY`, el backend registra un aviso diciendo exactamente
+esto. No es decorativo: sin credencial, cualquiera que conozca o adivine un
+`session_id` lee el partido de otro.
 
 ---
 
-## 9. Clasificador KMeans — Cómo funciona
+## 11. Retención de datos
 
-El clasificador se entrena **automáticamente** en los primeros frames cuando detecta
-≥6 jugadores. Agrupa los colores de camiseta en 2 clusters (Equipo 1 y 2).
+El vídeo subido **se borra al terminar el análisis** y no se guarda nunca. Lo que
+sí persiste son los datos derivados —nombres, equipos, calibración,
+trayectorias— en `SESSION_STATE_DIR`, y crecen sin límite.
 
-- No necesitas configurar colores manualmente
-- Funciona con cualquier color de kit
-- Si los equipos tienen camisetas muy similares, se puede re-entrenar con `POST /api/reset`
+```bash
+python3 scripts/purge_sessions.py --dir .session_state --max-age-days 7
+python3 scripts/purge_sessions.py --dir .session_state --dry-run
+docker compose --profile mantenimiento up -d purga     # cada hora, desatendido
+```
+
+La retención por defecto son 7 días y es **provisional**: la decisión de cuánto
+tiempo se pueden conservar estos datos sigue abierta (A-02 en `ANALISIS.md`).
+Siete días es corto a propósito — ampliarlo luego no cuesta nada, y haber
+guardado de más no se puede deshacer.
 
 ---
 
-**Football Copilot v2 · Maestre · Abril 2026**
+## 12. Runbook: qué hacer cuando se rompe
+
+| Síntoma | Causa casi siempre | Qué hacer |
+|---|---|---|
+| El análisis falla al instante y el log dice `DetectorUnavailable` | Faltan los pesos, o `ultralytics` no está instalado | `scripts/fetch_weights.py --check-only`; el mensaje del error trae el comando de instalación |
+| `El modelo debe estar dentro del proyecto` (400) | La ruta del modelo cae fuera de `MODEL_ROOT` | Es deliberado. Mueve el fichero o ajusta `MODEL_ROOT` |
+| 401 en todas las peticiones | El backend tiene `API_KEY` y el cliente no | Reconstruye el cliente con `VITE_API_KEY`, o quita la credencial |
+| 429 «el servicio ya está analizando N vídeos» | Límite global alcanzado | Esperar. Subir `MAX_CONCURRENT_ANALYSES` sólo ayuda si también subes `WORKER_THREADS` |
+| 429 «no hay hueco para otra sesión» | `MAX_SESSIONS` alcanzado | Borrar sesiones viejas con `DELETE /api/sessions/{id}` |
+| 413 al subir | El vídeo supera `MAX_UPLOAD_MB`, o el `client_max_body_size` de nginx | Los dos límites tienen que subir a la vez |
+| La barra de progreso no se mueve pero el análisis avanza | Algún proxy está almacenando el NDJSON | `proxy_buffering off`, ya puesto en `deploy/nginx.conf` |
+| Se corta a los 60 segundos | Timeout del proxy | `proxy_read_timeout`, ya puesto en `deploy/nginx.conf` |
+| `import cv2` falla en el contenedor | Faltan `libgl1`/`libglib2.0-0` | Ya están en el `Dockerfile`; si construyes otra imagen, acuérdate |
+| Las velocidades parecen multiplicadas | Base de tiempo equivocada | Mira `meta.time_source` del informe: si dice `reloj`, son métricas de webcam y no son comparables con las de un fichero |
+| El disco se llena | `SESSION_STATE_DIR` sin purgar | Sección 11 |

@@ -11,6 +11,12 @@
 
 # Python
 venv/
+.venv/
+.venv-test/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
 __pycache__/
 *.pyc
 *.pyo
@@ -25,6 +31,9 @@ frontend/dist/
 
 # Datos de partidos / exports
 partido_*.json
+
+# Estado de sesiones del backend
+.session_state/
 
 # macOS
 .DS_Store
@@ -41,3 +50,11 @@ frontend/.env
 
 # Logs
 *.log
+
+# Informe de cobertura para tools/check_cobertura.py
+coverage.json
+
+# Pesos del modelo: se provisionan, no se versionan
+weights/
+yolo11x.pt
+demo.mp4

@@ -1,0 +1,42 @@
+name: Gobernanza
+
+# El corte de carriles no se hace cumplir con documentación: se hace cumplir
+# aquí. Corre en cada push, sin instalar nada, en segundos.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  carriles:
+    name: Corte de carriles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # el guardia compara contra la base
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Comprobaciones estáticas del corte
+        run: python3 tools/check_carriles.py
+
+      # El guardia de propiedad sobre el diff se activa cuando la rama declara
+      # su carril con el prefijo `carril/<ID>/...`. Ramas sin ese prefijo pasan
+      # sólo las comprobaciones estáticas: ver worklog/PLATAFORMA/STATE.md.
+      - name: Propiedad de lo cambiado
+        if: startsWith(github.ref_name, 'carril/')
+        run: |
+          CARRIL="$(printf '%s' "${{ github.ref_name }}" | cut -d/ -f2)"
+          echo "Carril declarado por la rama: $CARRIL"
+          git fetch --no-tags origin "${{ github.event.repository.default_branch }}"
+          python3 tools/check_carriles.py \
+            --diff "origin/${{ github.event.repository.default_branch }}" \
+            --carril "$CARRIL"
